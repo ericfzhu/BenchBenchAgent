@@ -75,6 +75,8 @@ class TournamentController:
         expected = {identity.artifact_id for identity in manifest.cohort}
         if set(self.creator_backends) != expected or set(self.solver_backends) != expected:
             raise ValueError("creator and solver backends must cover the exact frozen cohort")
+        if validator.sandbox.backend != manifest.sandbox.backend:
+            raise ValueError("validation sandbox does not match the frozen manifest")
         for backend in self.creator_backends.values():
             prompt_digest = getattr(backend, "prompt_digest", None)
             if prompt_digest is not None and prompt_digest != manifest.creator_prompt_digest:

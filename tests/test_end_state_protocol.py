@@ -13,6 +13,7 @@ from bba.protocol import (
     CellState,
     ExperimentManifest,
     ModelIdentity,
+    SandboxCapabilities,
     ScoreSummary,
     SolverCell,
     digest_json,
@@ -24,10 +25,10 @@ from bba.validator import PackageValidator
 
 def cohort():
     return (
-        ModelIdentity("openai", "creator-a", "family-a"),
-        ModelIdentity("anthropic", "creator-b", "family-b"),
-        ModelIdentity("google", "creator-c", "family-c"),
-        ModelIdentity("openai", "creator-d", "family-a"),
+        ModelIdentity("google", "creator-a", "family-a"),
+        ModelIdentity("meta", "meta/creator-b", "family-b"),
+        ModelIdentity("mistral", "mistral/creator-c", "family-c"),
+        ModelIdentity("google", "creator-d", "family-a"),
     )
 
 
@@ -40,11 +41,14 @@ def manifest(epoch_id="protocol-test"):
     return ExperimentManifest(
         epoch_id=epoch_id,
         cohort=cohort(),
+        gcp_project="bba-test-project",
+        gcp_location="global",
         public_seed=20260811,
         hidden_commitments={key: digest_json(value) for key, value in hidden.items()},
         creator_prompt_digest="creator-prompt",
         solver_prompt_digest="solver-prompt",
         evaluator_version="public-evaluator-v1",
+        sandbox=SandboxCapabilities(backend="trusted-fixture-only"),
     )
 
 
@@ -54,11 +58,38 @@ class TestEndStateProtocol(unittest.TestCase):
             ExperimentManifest(
                 epoch_id="bad",
                 cohort=cohort()[:3],
+                gcp_project="bba-test-project",
+                gcp_location="global",
                 public_seed=1,
                 hidden_commitments={key: "a" * 64 for key in ("hidden_solver_panel", "hidden_seeds", "audit_policy")},
                 creator_prompt_digest="d",
                 solver_prompt_digest="e",
                 evaluator_version="v1",
+                sandbox=SandboxCapabilities(backend="trusted-fixture-only"),
+            )
+
+    def test_manifest_rejects_an_endpoint_from_another_gcp_project(self):
+        models = list(cohort())
+        models[0] = ModelIdentity(
+            "meta",
+            "projects/other-project/locations/global/endpoints/123",
+            "family-a",
+        )
+        with self.assertRaises(ValueError):
+            ExperimentManifest(
+                epoch_id="wrong-gcp-endpoint",
+                cohort=tuple(models),
+                gcp_project="bba-test-project",
+                gcp_location="global",
+                public_seed=1,
+                hidden_commitments={
+                    key: "a" * 64
+                    for key in ("hidden_solver_panel", "hidden_seeds", "audit_policy")
+                },
+                creator_prompt_digest="d",
+                solver_prompt_digest="e",
+                evaluator_version="v1",
+                sandbox=SandboxCapabilities(backend="trusted-fixture-only"),
             )
 
     def test_non_success_cell_cannot_carry_score(self):

@@ -2,7 +2,7 @@
 
 The :mod:`bba` package implements a two-sided creator/solver tournament with
 immutable evidence, human-gated promotion, a sealed holdout audit, and native
-Google ADK creator and solver execution.
+Google ADK creator and solver execution through GCP.
 """
 
 from bba.protocol import (

@@ -6,7 +6,14 @@ from pathlib import Path
 
 from bba.audit import DefectPair
 from bba.evidence import EvidenceStore
-from bba.protocol import AuditStatus, ExperimentManifest, ModelIdentity, PromotionDecision, digest_json
+from bba.protocol import (
+    AuditStatus,
+    ExperimentManifest,
+    ModelIdentity,
+    PromotionDecision,
+    SandboxCapabilities,
+    digest_json,
+)
 from tests.fixtures import CalibratedSolverFixture, ExecutableCreatorFixture, LocalFixtureSandbox
 from bba.tournament import TournamentController
 from bba.validator import PackageValidator, read_jsonl_strict
@@ -17,10 +24,10 @@ class TestEndStateTournament(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="bba-end-state-")
         self.root = Path(self.temporary.name)
         self.cohort = (
-            ModelIdentity("openai", "alpha", "family-a"),
-            ModelIdentity("anthropic", "beta", "family-b"),
-            ModelIdentity("google", "gamma", "family-c"),
-            ModelIdentity("openai", "delta", "family-a"),
+            ModelIdentity("google", "alpha", "family-a"),
+            ModelIdentity("meta", "meta/beta", "family-b"),
+            ModelIdentity("mistral", "mistral/gamma", "family-c"),
+            ModelIdentity("google", "delta", "family-a"),
         )
         self.hidden_material = {
             "hidden_solver_panel": ["sealed-a", "sealed-b"],
@@ -30,11 +37,14 @@ class TestEndStateTournament(unittest.TestCase):
         self.manifest = ExperimentManifest(
             epoch_id="fixture-epoch",
             cohort=self.cohort,
+            gcp_project="bba-test-project",
+            gcp_location="global",
             public_seed=20260811,
             hidden_commitments={key: digest_json(value) for key, value in self.hidden_material.items()},
             creator_prompt_digest="creator-prompt",
             solver_prompt_digest="solver-prompt",
             evaluator_version="public-evaluator-v1",
+            sandbox=SandboxCapabilities(backend="trusted-fixture-only"),
         )
         creator_biases = (0.20, 0.28, 0.36, 0.50)
         solver_skills = (0.45, 0.50, 0.55, 0.60)

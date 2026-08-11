@@ -55,20 +55,20 @@ class AuditStatus(StrEnum):
 
 @dataclass(frozen=True)
 class ModelIdentity:
-    provider: str
+    publisher: str
     model: str
     family: str
     reasoning: str = "default"
     tools: tuple = ()
 
     def __post_init__(self) -> None:
-        for name in ("provider", "model", "family"):
+        for name in ("publisher", "model", "family"):
             if not getattr(self, name).strip():
                 raise ValueError("model identity fields cannot be blank")
 
     @property
     def artifact_id(self) -> str:
-        raw = f"{self.provider}__{self.model}__{self.reasoning}"
+        raw = f"gcp__{self.publisher}__{self.model}__{self.reasoning}"
         return re.sub(r"[^a-zA-Z0-9._-]+", "_", raw)
 
 
@@ -131,17 +131,21 @@ class SandboxCapabilities:
     host_filesystem: bool = False
     ephemeral_home: bool = True
     resource_limits: bool = True
-    backend: str = "os"
+    backend: str = "gcp-cloud-run"
 
     def __post_init__(self) -> None:
         if self.network or self.host_filesystem or not self.ephemeral_home:
             raise ValueError("BBA generated-code sandboxes must be credential-free and isolated")
+        if not self.backend.strip():
+            raise ValueError("sandbox backend cannot be blank")
 
 
 @dataclass(frozen=True)
 class ExperimentManifest:
     epoch_id: str
     cohort: tuple
+    gcp_project: str
+    gcp_location: str
     public_seed: int
     hidden_commitments: Mapping[str, str]
     creator_prompt_digest: str
@@ -156,12 +160,23 @@ class ExperimentManifest:
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[a-zA-Z0-9._-]+", self.epoch_id):
             raise ValueError("epoch_id must be a filesystem-safe identifier")
+        if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", self.gcp_project):
+            raise ValueError("gcp_project must be a Google Cloud project ID")
+        if not re.fullmatch(r"[a-z0-9-]+", self.gcp_location):
+            raise ValueError("gcp_location must be a Google Cloud location")
         if len(self.cohort) < 4:
             raise ValueError("an epoch requires at least four model configurations")
         if len({model.family for model in self.cohort}) < 3:
             raise ValueError("an epoch requires at least three model families")
         if len({model.artifact_id for model in self.cohort}) != len(self.cohort):
-            raise ValueError("provider-qualified model identities must be unique")
+            raise ValueError("GCP-qualified model identities must be unique")
+        endpoint_pattern = re.compile(
+            r"projects/([^/]+)/locations/([^/]+)/endpoints/[^/]+"
+        )
+        for identity in self.cohort:
+            endpoint = endpoint_pattern.fullmatch(identity.model)
+            if endpoint and endpoint.groups() != (self.gcp_project, self.gcp_location):
+                raise ValueError("model endpoint does not match the frozen GCP project and location")
         required = {"hidden_solver_panel", "hidden_seeds", "audit_policy"}
         if set(self.hidden_commitments) != required:
             raise ValueError(f"hidden commitments must be exactly {sorted(required)}")

@@ -19,6 +19,8 @@ from bba.adk_runtime import (
     SOLVER_INSTRUCTION,
     AdkCreatorBackend,
     AdkSolverBackend,
+    resolve_model,
+    validate_gcp_environment,
 )
 from bba.errors import ProviderFailure
 from bba.protocol import ExperimentManifest, ModelIdentity, ResourceBudget, digest_json
@@ -77,13 +79,15 @@ class TestAdkRuntime(unittest.TestCase):
         self.identity = ModelIdentity("google", "scripted", "family-a")
         cohort = (
             self.identity,
-            ModelIdentity("provider-b", "b", "family-b"),
-            ModelIdentity("provider-c", "c", "family-c"),
-            ModelIdentity("provider-a", "d", "family-a"),
+            ModelIdentity("meta", "meta/b", "family-b"),
+            ModelIdentity("mistral", "mistral/c", "family-c"),
+            ModelIdentity("google", "d", "family-a"),
         )
         self.manifest = ExperimentManifest(
             epoch_id="adk-runtime-test",
             cohort=cohort,
+            gcp_project="bba-test-project",
+            gcp_location="global",
             public_seed=42,
             hidden_commitments={
                 "hidden_solver_panel": digest_json(["sealed-solver"]),
@@ -97,6 +101,22 @@ class TestAdkRuntime(unittest.TestCase):
 
     def test_exact_stable_adk_release_is_loaded(self):
         self.assertEqual(ADK_VERSION, "2.6.3")
+
+    def test_model_resolution_stays_on_google_cloud(self):
+        self.assertEqual(resolve_model(self.identity), "scripted")
+        open_model = resolve_model(ModelIdentity("meta", "meta/llama", "llama"))
+        self.assertEqual(open_model.model, "vertex_ai/meta/llama")
+
+    def test_gcp_environment_must_match_manifest(self):
+        environment = {
+            "GOOGLE_GENAI_USE_ENTERPRISE": "TRUE",
+            "GOOGLE_CLOUD_PROJECT": self.manifest.gcp_project,
+            "GOOGLE_CLOUD_LOCATION": self.manifest.gcp_location,
+        }
+        validate_gcp_environment(self.manifest, environment)
+        environment["GOOGLE_CLOUD_PROJECT"] = "wrong-project"
+        with self.assertRaises(ValueError):
+            validate_gcp_environment(self.manifest, environment)
 
     def test_creator_uses_adk_tools_and_emits_redacted_trace(self):
         model = ScriptedLlm(model="scripted-creator", responses=[

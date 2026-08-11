@@ -11,6 +11,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import os
 import shutil
 import threading
 from dataclasses import dataclass
@@ -24,6 +25,7 @@ from google.adk import Agent, Runner
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps import App
 from google.adk.models import BaseLlm
+from google.adk.models.lite_llm import LiteLlm
 from google.adk.plugins import BasePlugin
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
@@ -639,32 +641,46 @@ class AdkSolverBackend(_TraceBackend):
         return [{"id": item_id, "answer": submitted[item_id]} for item_id in expected_ids]
 
 
-def resolve_model(identity: ModelIdentity, override: Optional[ModelLike] = None) -> ModelLike:
-    """Resolve a native Google model or require an explicit ADK model adapter."""
-    if override is not None:
-        return override
-    if identity.provider.lower() in {"google", "google-ai", "vertex", "vertex-ai"}:
+def resolve_model(identity: ModelIdentity) -> ModelLike:
+    """Resolve a model through Google Cloud only."""
+    publisher = identity.publisher.lower()
+    if publisher in {"google", "anthropic"} or identity.model.startswith("projects/"):
         return identity.model
-    raise ValueError(
-        f"{identity.artifact_id} requires an explicit google.adk BaseLlm adapter"
-    )
+    model = identity.model.removeprefix("vertex_ai/")
+    return LiteLlm(model=f"vertex_ai/{model}")
+
+
+def validate_gcp_environment(
+    manifest: ExperimentManifest,
+    environment: Optional[Mapping[str, str]] = None,
+) -> None:
+    """Reject a runtime that is not configured for the frozen GCP project."""
+    values = environment if environment is not None else os.environ
+    enabled = values.get("GOOGLE_GENAI_USE_ENTERPRISE", "").lower()
+    if enabled != "true":
+        raise ValueError("GOOGLE_GENAI_USE_ENTERPRISE must be TRUE")
+    if values.get("GOOGLE_CLOUD_PROJECT") != manifest.gcp_project:
+        raise ValueError("GOOGLE_CLOUD_PROJECT does not match the epoch manifest")
+    if values.get("GOOGLE_CLOUD_LOCATION") != manifest.gcp_location:
+        raise ValueError("GOOGLE_CLOUD_LOCATION does not match the epoch manifest")
 
 
 def build_adk_backends(
     manifest: ExperimentManifest,
-    model_overrides: Optional[Mapping[str, ModelLike]] = None,
     *,
     construction_sandbox: Optional[SecureSandbox] = None,
     creator_instruction: str = CREATOR_INSTRUCTION,
     solver_instruction: str = SOLVER_INSTRUCTION,
 ) -> Tuple[Mapping[str, AdkCreatorBackend], Mapping[str, AdkSolverBackend]]:
     """Build the exact creator and solver backend maps required by a controller."""
-    overrides = dict(model_overrides or {})
+    validate_gcp_environment(manifest)
     sandbox = construction_sandbox or SecureSandbox()
+    if sandbox.backend != manifest.sandbox.backend:
+        raise ValueError("construction sandbox does not match the epoch manifest")
     creators = {}
     solvers = {}
     for identity in manifest.cohort:
-        model = resolve_model(identity, overrides.get(identity.artifact_id))
+        model = resolve_model(identity)
         creators[identity.artifact_id] = AdkCreatorBackend(
             model,
             instruction=creator_instruction,

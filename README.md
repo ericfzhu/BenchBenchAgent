@@ -27,13 +27,13 @@ ADK and the BBA controller have different functions:
 - BBA creates a new `InMemorySessionService` and a new ADK session for each model run.
 - BBA does not transfer conversation data between cells.
 
-An ADK trace records the ADK version and the provider-qualified model identity.
+An ADK trace records the ADK version and the GCP-qualified model identity.
 The trace also records session IDs, invocation IDs, model-call counts, tool names, token use, and event digests.
 The trace contains hashes of events.
 The trace does not contain prompts or tool arguments.
 `TournamentController` stores each trace with the epoch evidence.
 
-A production backend rejects a provider that does not supply token-use data.
+A production backend rejects a model endpoint that does not supply token-use data.
 Without token-use data, BBA cannot enforce the cumulative token limit.
 
 Each creator gets tools that can read and write only in its workspace.
@@ -42,20 +42,47 @@ Each solver can read only its copy of `solver_bundle`.
 The solver must use `submit_predictions` to send one complete prediction set.
 BBA does not convert solver text into benchmark evidence.
 
-BBA can use a native Google model directly from `ModelIdentity`.
-For a different provider, supply an explicit `google.adk.models.BaseLlm` adapter:
+BBA sends all model requests through Google Cloud.
+The epoch manifest freezes the Google Cloud project and location.
+BBA does not accept direct provider API keys or direct provider endpoints.
+
+Use Application Default Credentials (ADC).
+Set the Google Cloud environment before you build the backends:
+
+```bash
+gcloud auth application-default login
+export GOOGLE_CLOUD_PROJECT="your-project-id"
+export GOOGLE_CLOUD_LOCATION="global"
+export GOOGLE_GENAI_USE_ENTERPRISE="TRUE"
+```
+
+For a deployed workload, use a service account instead of the local `gcloud` login.
+Give the service account permission to use the selected models.
+
+`ModelIdentity.publisher` names the model publisher.
+`ModelIdentity.model` contains the exact Google Cloud model or endpoint ID.
+BBA selects the ADK connector as follows:
+
+- Gemini model IDs use the native ADK registry.
+- Anthropic model IDs use the native ADK registry and the Anthropic Vertex library.
+- A full `projects/.../locations/.../endpoints/...` resource uses the native ADK registry.
+- Other Model Garden MaaS IDs use the ADK `LiteLlm` connector with the `vertex_ai/` route.
+
+The caller does not supply an external-provider adapter:
 
 ```python
 from bba.adk_runtime import build_adk_backends
 
 creator_backends, solver_backends = build_adk_backends(
     manifest,
-    model_overrides={
-        identity.artifact_id: provider_adk_model,
-    },
     construction_sandbox=secure_sandbox,
 )
 ```
+
+For example, a cohort can contain Gemini, Llama, Mistral, and another distinct
+configuration that is available in Model Garden.
+Check the current Model Garden model cards before you freeze the epoch.
+Each selected model must support the function calls that BBA agents use.
 
 `AdkCreatorBackend` creates each live creator agent.
 `AdkSolverBackend` creates each live solver agent.
@@ -68,7 +95,7 @@ Before an epoch, the controller freezes the data in this list:
 
 - The cohort contains four or more model configurations.
 - The cohort contains three or more model families.
-- The manifest identifies all providers, model versions, reasoning levels, prompts, tools, and resource limits.
+- The manifest identifies the GCP project, GCP location, model publishers, model versions, reasoning levels, prompts, tools, and resource limits.
 - The epoch has three creator rounds.
 - Each solver cell has three separate runs.
 - The manifest identifies the public evaluator and its decision limits.
@@ -133,15 +160,30 @@ BBA does not trust code from a creator.
 `SecureSandbox` never runs candidate code without an audited operating-system boundary.
 If the boundary is not available, validation stops with an error.
 
-On macOS, the backend uses Seatbelt.
-The backend gives each run a temporary home directory.
-The backend does not permit network access.
-The backend permits reads only from approved runtime paths and the workspace.
-The backend permits writes only in the workspace.
-The backend applies time limits and extra resource limits.
+On Google Cloud, run BBA in a Cloud Run service with the sandbox launcher enabled.
+`SecureSandbox` detects `/usr/local/gcp/bin/sandbox` and starts one new ephemeral
+sandbox for each command.
+The nested sandbox does not receive the controller environment.
+Outbound network access is off.
+Only the candidate workspace is writable.
+The Cloud Run service must have one active epoch worker per instance.
+The service must not put credentials, hidden audit data, or other candidate
+packages in its container file system.
+Store that data outside the worker and transfer only the current workspace.
 
-A different operating system requires an audited container or virtual-machine backend.
-The backend must use the same `SecureSandbox` interface.
+Cloud Run sandboxes are a Preview Google Cloud feature.
+Enable the sandbox launcher when you deploy the service:
+
+```bash
+gcloud beta run services update BBA_SERVICE --sandbox-launcher
+```
+
+For local development on macOS, `SecureSandbox` uses Seatbelt.
+Both backends give each run a temporary home directory and enforce the controller timeout.
+If neither backend is available, BBA stops with an error.
+The manifest must name the backend that the controller uses.
+The default manifest backend is `gcp-cloud-run`.
+Use `macos-seatbelt` only for a local development epoch.
 
 The controller makes the checks in this list:
 
@@ -295,9 +337,9 @@ BBA does not change a historical record.
 
 ## Current status
 
-Version 0.3 includes the complete BBA protocol and Google ADK 2.6.3 model execution.
-Version 0.3 also includes the deterministic protocol test.
+Version 0.4 sends all model traffic through GCP and supports the Cloud Run sandbox launcher.
+It includes the complete BBA protocol, Google ADK 2.6.3 model execution, and the deterministic protocol test.
 
-Each provider adapter must supply audited credentials and a frozen model identity.
+Each GCP model endpoint must supply token-use data and a frozen model identity.
 Each epoch must also supply the required file-system boundary.
 BBA never uses an unrestricted host model call or a substitute agent runtime.
