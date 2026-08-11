@@ -642,9 +642,9 @@ class AdkSolverBackend(_TraceBackend):
 
 
 def resolve_model(identity: ModelIdentity) -> ModelLike:
-    """Resolve a model through Google Cloud only."""
+    """Resolve a serverless model through Vertex AI only."""
     publisher = identity.publisher.lower()
-    if publisher in {"google", "anthropic"} or identity.model.startswith("projects/"):
+    if publisher in {"google", "anthropic"}:
         return identity.model
     model = identity.model.removeprefix("vertex_ai/")
     return LiteLlm(model=f"vertex_ai/{model}")

@@ -68,29 +68,15 @@ class TestEndStateProtocol(unittest.TestCase):
                 sandbox=SandboxCapabilities(backend="trusted-fixture-only"),
             )
 
-    def test_manifest_rejects_an_endpoint_from_another_gcp_project(self):
-        models = list(cohort())
-        models[0] = ModelIdentity(
-            "meta",
-            "projects/other-project/locations/global/endpoints/123",
-            "family-a",
-        )
+    def test_model_identity_rejects_deployed_and_direct_endpoints(self):
         with self.assertRaises(ValueError):
-            ExperimentManifest(
-                epoch_id="wrong-gcp-endpoint",
-                cohort=tuple(models),
-                gcp_project="bba-test-project",
-                gcp_location="global",
-                public_seed=1,
-                hidden_commitments={
-                    key: "a" * 64
-                    for key in ("hidden_solver_panel", "hidden_seeds", "audit_policy")
-                },
-                creator_prompt_digest="d",
-                solver_prompt_digest="e",
-                evaluator_version="v1",
-                sandbox=SandboxCapabilities(backend="trusted-fixture-only"),
+            ModelIdentity(
+                "meta",
+                "projects/bba-test-project/locations/global/endpoints/123",
+                "family-a",
             )
+        with self.assertRaises(ValueError):
+            ModelIdentity("meta", "https://models.example.test/v1", "family-a")
 
     def test_non_success_cell_cannot_carry_score(self):
         with self.assertRaises(ValueError):

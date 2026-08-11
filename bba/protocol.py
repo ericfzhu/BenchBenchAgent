@@ -65,6 +65,12 @@ class ModelIdentity:
         for name in ("publisher", "model", "family"):
             if not getattr(self, name).strip():
                 raise ValueError("model identity fields cannot be blank")
+        if re.search(r"(^|/)endpoints(/|$)", self.model) or re.match(
+            r"https?://", self.model
+        ):
+            raise ValueError(
+                "BBA requires a serverless Vertex AI model ID; deployed and direct endpoints are forbidden"
+            )
 
     @property
     def artifact_id(self) -> str:
@@ -170,13 +176,6 @@ class ExperimentManifest:
             raise ValueError("an epoch requires at least three model families")
         if len({model.artifact_id for model in self.cohort}) != len(self.cohort):
             raise ValueError("GCP-qualified model identities must be unique")
-        endpoint_pattern = re.compile(
-            r"projects/([^/]+)/locations/([^/]+)/endpoints/[^/]+"
-        )
-        for identity in self.cohort:
-            endpoint = endpoint_pattern.fullmatch(identity.model)
-            if endpoint and endpoint.groups() != (self.gcp_project, self.gcp_location):
-                raise ValueError("model endpoint does not match the frozen GCP project and location")
         required = {"hidden_solver_panel", "hidden_seeds", "audit_policy"}
         if set(self.hidden_commitments) != required:
             raise ValueError(f"hidden commitments must be exactly {sorted(required)}")

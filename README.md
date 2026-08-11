@@ -33,7 +33,7 @@ The trace contains hashes of events.
 The trace does not contain prompts or tool arguments.
 `TournamentController` stores each trace with the epoch evidence.
 
-A production backend rejects a model endpoint that does not supply token-use data.
+A production backend rejects a model response that does not supply token-use data.
 Without token-use data, BBA cannot enforce the cumulative token limit.
 
 Each creator gets tools that can read and write only in its workspace.
@@ -42,9 +42,11 @@ Each solver can read only its copy of `solver_bundle`.
 The solver must use `submit_predictions` to send one complete prediction set.
 BBA does not convert solver text into benchmark evidence.
 
-BBA sends all model requests through Google Cloud.
+BBA sends all model requests through serverless Vertex AI APIs.
 The epoch manifest freezes the Google Cloud project and location.
 BBA does not accept direct provider API keys or direct provider endpoints.
+BBA does not accept dedicated Vertex AI endpoint resources.
+BBA does not deploy or keep model-serving infrastructure.
 
 Use Application Default Credentials (ADC).
 Set the Google Cloud environment before you build the backends:
@@ -56,16 +58,15 @@ export GOOGLE_CLOUD_LOCATION="global"
 export GOOGLE_GENAI_USE_ENTERPRISE="TRUE"
 ```
 
-For a deployed workload, use a service account instead of the local `gcloud` login.
+For a hosted BBA controller, use a service account instead of the local `gcloud` login.
 Give the service account permission to use the selected models.
 
 `ModelIdentity.publisher` names the model publisher.
-`ModelIdentity.model` contains the exact Google Cloud model or endpoint ID.
+`ModelIdentity.model` contains the exact serverless Vertex AI model ID.
 BBA selects the ADK connector as follows:
 
 - Gemini model IDs use the native ADK registry.
 - Anthropic model IDs use the native ADK registry and the Anthropic Vertex library.
-- A full `projects/.../locations/.../endpoints/...` resource uses the native ADK registry.
 - Other Model Garden MaaS IDs use the ADK `LiteLlm` connector with the `vertex_ai/` route.
 
 The caller does not supply an external-provider adapter:
@@ -79,9 +80,10 @@ creator_backends, solver_backends = build_adk_backends(
 )
 ```
 
-For example, a cohort can contain Gemini, Llama, Mistral, and another distinct
-configuration that is available in Model Garden.
+For example, a cohort can contain Gemini, Claude, and two other distinct
+serverless configurations that are available in Model Garden.
 Check the current Model Garden model cards before you freeze the epoch.
+Do not select a model that requires endpoint deployment.
 Each selected model must support the function calls that BBA agents use.
 
 `AdkCreatorBackend` creates each live creator agent.
@@ -337,9 +339,9 @@ BBA does not change a historical record.
 
 ## Current status
 
-Version 0.4 sends all model traffic through GCP and supports the Cloud Run sandbox launcher.
+Version 0.4 sends all model traffic through serverless Vertex AI APIs and supports the Cloud Run sandbox launcher.
 It includes the complete BBA protocol, Google ADK 2.6.3 model execution, and the deterministic protocol test.
 
-Each GCP model endpoint must supply token-use data and a frozen model identity.
+Each model response must supply token-use data and a frozen model identity.
 Each epoch must also supply the required file-system boundary.
 BBA never uses an unrestricted host model call or a substitute agent runtime.
