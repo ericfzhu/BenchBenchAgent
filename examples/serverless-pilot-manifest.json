@@ -1,0 +1,72 @@
+{
+  "epoch_id": "pilot-20260812",
+  "cohort": [
+    {
+      "publisher": "google",
+      "model": "gemini-3.6-flash",
+      "family": "gemini",
+      "reasoning": "default",
+      "tools": ["function-calling"]
+    },
+    {
+      "publisher": "google",
+      "model": "gemini-3.5-flash-lite",
+      "family": "gemini",
+      "reasoning": "default",
+      "tools": ["function-calling"]
+    },
+    {
+      "publisher": "anthropic",
+      "model": "claude-sonnet-5@default",
+      "family": "claude",
+      "reasoning": "default",
+      "tools": ["function-calling"]
+    },
+    {
+      "publisher": "xai",
+      "model": "xai/grok-4.3",
+      "family": "grok",
+      "reasoning": "default",
+      "tools": ["function-calling"]
+    }
+  ],
+  "gcp_project": "your-project-id",
+  "gcp_location": "global",
+  "public_seed": 20260812,
+  "hidden_commitments": {
+    "hidden_solver_panel": "0000000000000000000000000000000000000000000000000000000000000000",
+    "hidden_seeds": "0000000000000000000000000000000000000000000000000000000000000000",
+    "audit_policy": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "creator_prompt_digest": "6612341d7fc833c3302a9ad5051891b4822b81945e39a0aeac28285e7a2b0789",
+  "solver_prompt_digest": "b9b2fc6fa3ee447fb8992614c5fe88b76c2b081dbd9afd2167e19eeb04c5d002",
+  "evaluator_version": "public-evaluator-v1",
+  "thresholds": {
+    "sample_count": 30,
+    "rounds": 3,
+    "solver_repetitions": 3,
+    "rejection_accuracy": 0.5,
+    "reviewer_sample_count": 6,
+    "audit_min_spearman": 0.5,
+    "audit_min_pairwise": 0.7,
+    "audit_min_utility_recovery": 0.9,
+    "audit_min_defect_sensitivity": 1.0
+  },
+  "budget": {
+    "creator_seconds": 1200,
+    "solver_seconds": 600,
+    "max_tokens": 8000,
+    "max_llm_calls": 16,
+    "memory_mb": 2048,
+    "process_limit": 64
+  },
+  "sandbox": {
+    "network": false,
+    "host_filesystem": false,
+    "ephemeral_home": true,
+    "resource_limits": true,
+    "backend": "macos-seatbelt"
+  },
+  "protocol_version": "bba.epoch.v1",
+  "schema_version": 1
+}
