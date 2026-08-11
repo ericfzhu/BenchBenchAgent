@@ -2,6 +2,7 @@
 
 This guide tells an operator how to prepare and run the present BBA implementation.
 Read the [protocol specification](protocol.md) before you run a paid epoch.
+Google Python Agent Development Kit (ADK) supplies the model agent runtime.
 
 ## 1. Current operating limit
 
@@ -215,14 +216,15 @@ for name, value in hidden_material.items():
 Replace all placeholder commitments in the template.
 Do not publish `hidden_material` before public closure.
 
-## 10. Check the manifest in Python
+## 10. Load the manifest in Python
 
-The repository does not contain a JSON manifest loader.
-Construct `ModelIdentity`, `ResourceBudget`, `DecisionThresholds`, `SandboxCapabilities`, and `ExperimentManifest` from the reviewed JSON values.
-
-This example shows the required construction pattern:
+The package does not contain a JSON manifest loader.
+Use this code in the long-lived epoch process:
 
 ```python
+import json
+from pathlib import Path
+
 from bba.protocol import (
     DecisionThresholds,
     ExperimentManifest,
@@ -231,33 +233,29 @@ from bba.protocol import (
     SandboxCapabilities,
 )
 
-manifest = ExperimentManifest(
-    epoch_id="pilot-20260812",
-    cohort=(
-        ModelIdentity("google", "gemini-3.6-flash", "gemini"),
-        ModelIdentity("google", "gemini-3.5-flash-lite", "gemini"),
-        ModelIdentity("anthropic", "claude-sonnet-5@default", "claude"),
-        ModelIdentity("xai", "xai/grok-4.3", "grok"),
-    ),
-    gcp_project="PROJECT_ID",
-    gcp_location="global",
-    public_seed=20260812,
-    hidden_commitments={
-        "hidden_solver_panel": "REPLACE_WITH_64_LOWERCASE_HEX_CHARACTERS",
-        "hidden_seeds": "REPLACE_WITH_64_LOWERCASE_HEX_CHARACTERS",
-        "audit_policy": "REPLACE_WITH_64_LOWERCASE_HEX_CHARACTERS",
-    },
-    creator_prompt_digest="6612341d7fc833c3302a9ad5051891b4822b81945e39a0aeac28285e7a2b0789",
-    solver_prompt_digest="b9b2fc6fa3ee447fb8992614c5fe88b76c2b081dbd9afd2167e19eeb04c5d002",
-    evaluator_version="public-evaluator-v1",
-    thresholds=DecisionThresholds(),
-    budget=ResourceBudget(),
-    sandbox=SandboxCapabilities(backend="macos-seatbelt"),
+path = Path("/secure/path/epoch-manifest.json")
+data = json.loads(path.read_text(encoding="utf-8"))
+
+if any(value == "0" * 64 for value in data["hidden_commitments"].values()):
+    raise ValueError("replace all example hidden commitments")
+
+data["cohort"] = tuple(
+    ModelIdentity(
+        **{
+            **item,
+            "tools": tuple(item.get("tools", ())),
+        }
+    )
+    for item in data["cohort"]
 )
+data["thresholds"] = DecisionThresholds(**data["thresholds"])
+data["budget"] = ResourceBudget(**data["budget"])
+data["sandbox"] = SandboxCapabilities(**data["sandbox"])
+manifest = ExperimentManifest(**data)
 ```
 
-The placeholder commitments intentionally fail validation.
-Replace them before you construct the manifest.
+The loader rejects the example commitment values.
+Replace them before you start the process.
 
 ## 11. Run a public epoch with the Python API
 

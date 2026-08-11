@@ -11,8 +11,10 @@ from bba.evidence import EvidenceStore
 from bba.protocol import (
     AuditStatus,
     CellState,
+    DecisionThresholds,
     ExperimentManifest,
     ModelIdentity,
+    ResourceBudget,
     SandboxCapabilities,
     ScoreSummary,
     SolverCell,
@@ -53,6 +55,28 @@ def manifest(epoch_id="protocol-test"):
 
 
 class TestEndStateProtocol(unittest.TestCase):
+    def test_serverless_pilot_manifest_matches_the_public_contract(self):
+        path = Path(__file__).parents[1] / "examples" / "serverless-pilot-manifest.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["cohort"] = tuple(
+            ModelIdentity(
+                **{
+                    **item,
+                    "tools": tuple(item.get("tools", ())),
+                }
+            )
+            for item in data["cohort"]
+        )
+        data["thresholds"] = DecisionThresholds(**data["thresholds"])
+        data["budget"] = ResourceBudget(**data["budget"])
+        data["sandbox"] = SandboxCapabilities(**data["sandbox"])
+
+        pilot = ExperimentManifest(**data)
+
+        self.assertEqual(len(pilot.cohort), 4)
+        self.assertEqual(len({model.family for model in pilot.cohort}), 3)
+        self.assertTrue(all("/endpoints/" not in model.model for model in pilot.cohort))
+
     def test_manifest_requires_four_models_and_three_families(self):
         with self.assertRaises(ValueError):
             ExperimentManifest(

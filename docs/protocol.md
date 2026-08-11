@@ -36,6 +36,12 @@ BBA also publishes creator ranks, solver ranks, candidate status, and immutable 
 
 **Holdout** means sealed audit evidence that the public evaluator cannot inspect before public closure.
 
+**Private gold** means the controller-only set of correct answers.
+
+**Oracle** means the verifier and private gold that determine the correct result.
+
+**Macro-average** means the arithmetic mean of benchmark scores with equal benchmark weight.
+
 ## 3. Epoch manifest
 
 The controller must freeze the manifest before the first creator run.
@@ -258,7 +264,10 @@ The controller applies these public status rules:
 BBA must publish a Round 0 creator rank and a final-round creator rank.
 BBA must publish adaptation gain separately.
 
-BBA ranks active creator rows by these keys:
+BBA ranks creator rows by candidate status first.
+The status order is `active`, `frontier_challenge`, `awaiting_review`, `solvability_audit`, `too_easy`, `incomplete`, and `invalid`.
+
+BBA uses these keys within one status:
 
 1. Lowest best-solver median accuracy
 2. Lowest panel median accuracy
@@ -302,7 +311,7 @@ The public record must contain these items:
 - Blind and final creator ranks
 - Adaptation gain
 - Solver ranks
-- Source digests
+- Manifest digest
 - Closure time
 
 ## 14. Holdout audit
