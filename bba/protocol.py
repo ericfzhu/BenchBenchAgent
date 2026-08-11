@@ -294,3 +294,56 @@ def canonical_json(value: Any) -> bytes:
 
 def digest_json(value: Any) -> str:
     return hashlib.sha256(canonical_json(value)).hexdigest()
+
+
+def model_identity_from_mapping(value: Mapping[str, Any]) -> ModelIdentity:
+    """Load one frozen model identity from JSON-compatible data."""
+
+    data = dict(value)
+    data["tools"] = tuple(data.get("tools", ()))
+    return ModelIdentity(**data)
+
+
+def experiment_manifest_from_mapping(value: Mapping[str, Any]) -> ExperimentManifest:
+    """Load and validate an experiment manifest from JSON-compatible data."""
+
+    data = dict(value)
+    data["cohort"] = tuple(model_identity_from_mapping(item) for item in data["cohort"])
+    data["thresholds"] = DecisionThresholds(**data.get("thresholds", {}))
+    data["budget"] = ResourceBudget(**data.get("budget", {}))
+    data["sandbox"] = SandboxCapabilities(**data.get("sandbox", {}))
+    return ExperimentManifest(**data)
+
+
+def score_summary_from_mapping(value: Optional[Mapping[str, Any]]) -> Optional[ScoreSummary]:
+    if value is None:
+        return None
+    return ScoreSummary(**dict(value))
+
+
+def solver_cell_from_mapping(value: Mapping[str, Any]) -> SolverCell:
+    data = dict(value)
+    data["solver"] = model_identity_from_mapping(data["solver"])
+    data["state"] = CellState(data["state"])
+    data["score"] = score_summary_from_mapping(data.get("score"))
+    return SolverCell(**data)
+
+
+def candidate_snapshot_from_mapping(value: Mapping[str, Any]) -> CandidateSnapshot:
+    data = dict(value)
+    data["creator"] = model_identity_from_mapping(data["creator"])
+    return CandidateSnapshot(**data)
+
+
+def validation_record_from_mapping(value: Mapping[str, Any]) -> ValidationRecord:
+    data = dict(value)
+    data["errors"] = tuple(data.get("errors", ()))
+    return ValidationRecord(**data)
+
+
+def promotion_record_from_mapping(value: Mapping[str, Any]) -> PromotionRecord:
+    data = dict(value)
+    data["decision"] = PromotionDecision(data["decision"])
+    data["sampled_item_ids"] = tuple(data.get("sampled_item_ids", ()))
+    data["limitations"] = tuple(data.get("limitations", ()))
+    return PromotionRecord(**data)

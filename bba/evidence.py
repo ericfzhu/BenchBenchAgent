@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
@@ -11,7 +12,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
-from bba.protocol import CandidateSnapshot, ExperimentManifest, ModelIdentity, canonical_json, to_primitive
+from bba.protocol import (
+    CandidateSnapshot,
+    ExperimentManifest,
+    ModelIdentity,
+    candidate_snapshot_from_mapping,
+    canonical_json,
+    experiment_manifest_from_mapping,
+    to_primitive,
+)
 
 
 IGNORED_NAMES = {"__pycache__", ".DS_Store", ".pytest_cache"}
@@ -69,6 +78,10 @@ def atomic_publish_json(path: Path, value: Any) -> None:
         temp_path.unlink(missing_ok=True)
 
 
+def read_json(path: Path) -> Any:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
 class EvidenceStore:
     def __init__(self, root: Path):
         self.root = Path(root).resolve()
@@ -77,10 +90,37 @@ class EvidenceStore:
     def epoch_root(self, epoch_id: str) -> Path:
         return self.root / "epochs" / epoch_id
 
+    def record_path(self, epoch_id: str, category: str, record_id: str) -> Path:
+        if not category or not record_id or "/" in category or "/" in record_id:
+            raise ValueError("invalid evidence record path")
+        return self.epoch_root(epoch_id) / category / f"{record_id}.json"
+
     def freeze_manifest(self, manifest: ExperimentManifest) -> Path:
         destination = self.epoch_root(manifest.epoch_id) / "manifest.json"
+        if destination.exists():
+            frozen = experiment_manifest_from_mapping(read_json(destination))
+            if frozen.digest != manifest.digest:
+                raise ValueError("frozen epoch manifest does not match the requested manifest")
+            return destination
         atomic_publish_json(destination, manifest)
         return destination
+
+    def load_manifest(self, epoch_id: str) -> ExperimentManifest:
+        path = self.epoch_root(epoch_id) / "manifest.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"epoch manifest does not exist: {epoch_id}")
+        return experiment_manifest_from_mapping(read_json(path))
+
+    def load_snapshots(self, epoch_id: str) -> list[CandidateSnapshot]:
+        root = self.epoch_root(epoch_id) / "candidates"
+        snapshots = []
+        for metadata_path in sorted(root.glob("*/snapshot.json")):
+            snapshot = candidate_snapshot_from_mapping(read_json(metadata_path))
+            package_path = metadata_path.parent / "package"
+            if tree_digest(package_path) != snapshot.package_digest:
+                raise ValueError(f"candidate snapshot digest is invalid: {snapshot.snapshot_id}")
+            snapshots.append(dataclasses.replace(snapshot, package_path=str(package_path)))
+        return snapshots
 
     def freeze_candidate(
         self,
@@ -114,11 +154,46 @@ class EvidenceStore:
         return snapshot
 
     def publish_record(self, epoch_id: str, category: str, record_id: str, value: Any) -> Path:
-        if not category or not record_id or "/" in category or "/" in record_id:
-            raise ValueError("invalid evidence record path")
-        destination = self.epoch_root(epoch_id) / category / f"{record_id}.json"
+        destination = self.record_path(epoch_id, category, record_id)
         atomic_publish_json(destination, value)
         return destination
+
+    def publish_record_idempotent(
+        self,
+        epoch_id: str,
+        category: str,
+        record_id: str,
+        value: Any,
+    ) -> Path:
+        destination = self.record_path(epoch_id, category, record_id)
+        if destination.exists():
+            if canonical_json(read_json(destination)) != canonical_json(value):
+                raise FileExistsError(f"immutable evidence conflicts with requested record: {destination}")
+            return destination
+        atomic_publish_json(destination, value)
+        return destination
+
+    def publish_attempt_record(
+        self,
+        epoch_id: str,
+        category: str,
+        record_id: str,
+        value: Any,
+    ) -> Path:
+        attempt = 1
+        while True:
+            suffix = record_id if attempt == 1 else f"{record_id}--attempt-{attempt}"
+            destination = self.record_path(epoch_id, category, suffix)
+            if not destination.exists():
+                atomic_publish_json(destination, value)
+                return destination
+            attempt += 1
+
+    def read_record(self, epoch_id: str, category: str, record_id: str) -> Any:
+        path = self.record_path(epoch_id, category, record_id)
+        if not path.is_file():
+            raise FileNotFoundError(f"evidence record does not exist: {path}")
+        return read_json(path)
 
     def append_registry_record(self, registry_name: str, value: Any) -> Path:
         """Append a hash-chained record using one immutable JSON file per entry."""
@@ -133,4 +208,3 @@ class EvidenceStore:
         destination = registry / f"{sequence:08d}-{record_digest[:12]}.json"
         atomic_publish_json(destination, body)
         return destination
-

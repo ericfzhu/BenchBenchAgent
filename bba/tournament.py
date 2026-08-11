@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence
 
 from bba.audit import DefectPair, audit_evaluator
 from bba.errors import PredictionParseFailure, ProviderFailure, SolverTimedOut
-from bba.evidence import EvidenceStore, file_digest
+from bba.evidence import EvidenceStore, file_digest, read_json
 from bba.protocol import (
     CandidateSnapshot,
     CellState,
@@ -24,12 +24,17 @@ from bba.protocol import (
     PromotionRecord,
     ScoreSummary,
     SolverCell,
+    candidate_snapshot_from_mapping,
     canonical_json,
     digest_json,
+    promotion_record_from_mapping,
+    solver_cell_from_mapping,
     to_primitive,
+    validation_record_from_mapping,
 )
 from bba.registry import PromotionRegistry
 from bba.scoring import CandidateEvaluation, classify_candidate, matrix, rank_creators, rank_solvers
+from bba.state import LocalStateStore
 from bba.validator import PackageValidator, read_jsonl_strict, validate_answer_rows, validate_item_rows, write_jsonl
 
 
@@ -63,19 +68,24 @@ class TournamentController:
         self,
         manifest: ExperimentManifest,
         evidence: EvidenceStore,
-        validator: PackageValidator,
-        creator_backends: Mapping[str, CreatorBackend],
-        solver_backends: Mapping[str, SolverBackend],
+        validator: Optional[PackageValidator] = None,
+        creator_backends: Optional[Mapping[str, CreatorBackend]] = None,
+        solver_backends: Optional[Mapping[str, SolverBackend]] = None,
+        state: Optional[LocalStateStore] = None,
     ):
         self.manifest = manifest
         self.evidence = evidence
         self.validator = validator
-        self.creator_backends = dict(creator_backends)
-        self.solver_backends = dict(solver_backends)
+        self.creator_backends = dict(creator_backends or {})
+        self.solver_backends = dict(solver_backends or {})
+        self.state = state or LocalStateStore(self.evidence.root / "bba-state.sqlite3")
+        self.state.register_epoch(manifest)
         expected = {identity.artifact_id for identity in manifest.cohort}
-        if set(self.creator_backends) != expected or set(self.solver_backends) != expected:
+        if self.creator_backends and set(self.creator_backends) != expected:
+            raise ValueError("creator backends must cover the exact frozen cohort")
+        if self.solver_backends and set(self.solver_backends) != expected:
             raise ValueError("creator and solver backends must cover the exact frozen cohort")
-        if validator.sandbox.backend != manifest.sandbox.backend:
+        if validator is not None and validator.sandbox.backend != manifest.sandbox.backend:
             raise ValueError("validation sandbox does not match the frozen manifest")
         for backend in self.creator_backends.values():
             prompt_digest = getattr(backend, "prompt_digest", None)
@@ -92,6 +102,232 @@ class TournamentController:
         self._public_closed = False
         self._audit_public_scores: Optional[Dict[str, float]] = None
         self._audit_defect_pairs: tuple = ()
+        self._holdout_record: Optional[Dict[str, Any]] = None
+        self._restore_state()
+
+    def _creator_work_id(self, creator: ModelIdentity, round_index: int) -> str:
+        return f"creator--r{round_index}--{creator.artifact_id}"
+
+    def _creator_payload(
+        self,
+        creator: ModelIdentity,
+        round_index: int,
+        parent: Optional[CandidateSnapshot],
+    ) -> Dict[str, Any]:
+        return {
+            "manifest_digest": self.manifest.digest,
+            "creator": creator.artifact_id,
+            "round": round_index,
+            "parent_snapshot_id": parent.snapshot_id if parent else None,
+        }
+
+    def _validation_work_id(self, snapshot: CandidateSnapshot) -> str:
+        return f"validation--{snapshot.snapshot_id}"
+
+    def _validation_payload(self, snapshot: CandidateSnapshot) -> Dict[str, Any]:
+        return {
+            "manifest_digest": self.manifest.digest,
+            "snapshot_id": snapshot.snapshot_id,
+            "candidate_digest": snapshot.package_digest,
+            "public_seed": self.manifest.public_seed,
+        }
+
+    def _solver_work_id(
+        self,
+        snapshot: CandidateSnapshot,
+        solver: ModelIdentity,
+        repetition: int,
+    ) -> str:
+        return f"solver--{self._cell_record_id(snapshot, solver, repetition)}"
+
+    def _solver_payload(
+        self,
+        snapshot: CandidateSnapshot,
+        solver: ModelIdentity,
+        repetition: int,
+    ) -> Dict[str, Any]:
+        return {
+            "epoch_digest": self.manifest.digest,
+            "candidate_digest": snapshot.package_digest,
+            "solver": to_primitive(solver),
+            "repetition": repetition,
+            "budget": to_primitive(self.manifest.budget),
+        }
+
+    def _evidence_ref(self, path: Path) -> str:
+        return path.resolve().relative_to(self.evidence.root).as_posix()
+
+    def _ordered_snapshots(self, snapshots: Sequence[CandidateSnapshot]) -> List[CandidateSnapshot]:
+        cohort_order = {
+            identity.artifact_id: index for index, identity in enumerate(self.manifest.cohort)
+        }
+        return sorted(
+            snapshots,
+            key=lambda item: (
+                item.round_index,
+                cohort_order.get(item.creator.artifact_id, len(cohort_order)),
+            ),
+        )
+
+    def _restore_state(self) -> None:
+        manifest_path = self.evidence.epoch_root(self.manifest.epoch_id) / "manifest.json"
+        if not manifest_path.exists():
+            return
+        frozen = self.evidence.load_manifest(self.manifest.epoch_id)
+        if frozen.digest != self.manifest.digest:
+            raise ValueError("evidence manifest does not match the requested manifest")
+
+        self.snapshots = self._ordered_snapshots(
+            self.evidence.load_snapshots(self.manifest.epoch_id)
+        )
+        snapshot_by_digest = {}
+        snapshot_keys = set()
+        for snapshot in self.snapshots:
+            key = (snapshot.creator.artifact_id, snapshot.round_index)
+            if key in snapshot_keys:
+                raise ValueError(f"multiple snapshots exist for creator round: {key}")
+            snapshot_keys.add(key)
+            snapshot_by_digest[snapshot.package_digest] = snapshot
+            parent = next(
+                (
+                    item
+                    for item in self.snapshots
+                    if item.snapshot_id == snapshot.parent_snapshot_id
+                ),
+                None,
+            )
+            payload = self._creator_payload(snapshot.creator, snapshot.round_index, parent)
+            metadata_path = (
+                self.evidence.epoch_root(self.manifest.epoch_id)
+                / "candidates"
+                / snapshot.snapshot_id
+                / "snapshot.json"
+            )
+            self.state.reconcile_success(
+                self.manifest.epoch_id,
+                self._creator_work_id(snapshot.creator, snapshot.round_index),
+                "creator",
+                payload,
+                self._evidence_ref(metadata_path),
+                file_digest(metadata_path),
+            )
+
+        validation_root = self.evidence.epoch_root(self.manifest.epoch_id) / "validations"
+        for path in sorted(validation_root.glob("*.json")):
+            snapshot_id = path.stem
+            snapshot = next(
+                (item for item in self.snapshots if item.snapshot_id == snapshot_id), None
+            )
+            if snapshot is None:
+                raise ValueError(f"validation has no candidate snapshot: {snapshot_id}")
+            record = validation_record_from_mapping(read_json(path))
+            if record.candidate_digest != snapshot.package_digest:
+                raise ValueError(f"validation digest mismatch: {snapshot_id}")
+            self.validations[snapshot_id] = record
+            self.state.reconcile_success(
+                self.manifest.epoch_id,
+                self._validation_work_id(snapshot),
+                "validation",
+                self._validation_payload(snapshot),
+                self._evidence_ref(path),
+                file_digest(path),
+            )
+
+        cell_root = self.evidence.epoch_root(self.manifest.epoch_id) / "solver-cells"
+        for path in sorted(cell_root.glob("*.json")):
+            cell = solver_cell_from_mapping(read_json(path))
+            snapshot = snapshot_by_digest.get(cell.candidate_digest)
+            if snapshot is None:
+                raise ValueError(f"solver cell has no candidate snapshot: {path.name}")
+            expected_name = f"{self._cell_record_id(snapshot, cell.solver, cell.repetition)}.json"
+            if path.name != expected_name:
+                raise ValueError(f"solver cell path does not match its identity: {path.name}")
+            self.cells.setdefault(snapshot.snapshot_id, []).append(cell)
+            self.state.reconcile_success(
+                self.manifest.epoch_id,
+                self._solver_work_id(snapshot, cell.solver, cell.repetition),
+                "solver",
+                self._solver_payload(snapshot, cell.solver, cell.repetition),
+                self._evidence_ref(path),
+                file_digest(path),
+            )
+        for snapshot_id in self.cells:
+            self.cells[snapshot_id].sort(
+                key=lambda item: (item.solver.artifact_id, item.repetition)
+            )
+
+        promotion_root = self.evidence.epoch_root(self.manifest.epoch_id) / "promotions"
+        for path in sorted(promotion_root.glob("*.json")):
+            record = promotion_record_from_mapping(read_json(path))
+            self.promotions[record.candidate_digest] = record
+
+        audit_population_path = self.evidence.record_path(
+            self.manifest.epoch_id, "audit", "public-population"
+        )
+        if audit_population_path.exists():
+            population = read_json(audit_population_path)
+            self._audit_public_scores = {
+                str(key): float(value)
+                for key, value in population["public_scores"].items()
+            }
+            self._audit_defect_pairs = tuple(
+                DefectPair(**item) for item in population["defect_pairs"]
+            )
+            self.state.set_phase(self.manifest.epoch_id, "audit_population_frozen")
+
+        public_path = self.evidence.record_path(
+            self.manifest.epoch_id, "evaluation", "public"
+        )
+        if public_path.exists():
+            self._public_closed = True
+            self.state.set_phase(self.manifest.epoch_id, "public_closed")
+
+        holdout_path = self.evidence.record_path(
+            self.manifest.epoch_id, "audit", "holdout"
+        )
+        if holdout_path.exists():
+            self._holdout_record = read_json(holdout_path)
+            self.state.set_phase(self.manifest.epoch_id, "audited")
+
+        if self._public_run_is_complete() and not self._public_closed:
+            self.state.set_phase(self.manifest.epoch_id, "awaiting_review")
+
+    def _public_run_is_complete(self) -> bool:
+        expected_snapshots = len(self.manifest.cohort) * self.manifest.thresholds.rounds
+        if len(self.snapshots) != expected_snapshots:
+            return False
+        for snapshot in self.snapshots:
+            validation = self.validations.get(snapshot.snapshot_id)
+            if validation is None:
+                return False
+            if validation.passed:
+                expected_cells = (
+                    len(self.manifest.cohort)
+                    * self.manifest.thresholds.solver_repetitions
+                )
+                if len(self.cells.get(snapshot.snapshot_id, ())) != expected_cells:
+                    return False
+        return True
+
+    def epoch_status(self) -> Dict[str, Any]:
+        result = self.state.status(self.manifest.epoch_id)
+        result.update(
+            {
+                "snapshots": len(self.snapshots),
+                "validations": len(self.validations),
+                "solver_cells": sum(len(items) for items in self.cells.values()),
+                "promotions": len(self.promotions),
+                "public_closed": self._public_closed,
+                "holdout_complete": self._holdout_record is not None,
+            }
+        )
+        return result
+
+    def snapshot_by_id(self, snapshot_id: str) -> CandidateSnapshot:
+        for snapshot in self.snapshots:
+            if snapshot.snapshot_id == snapshot_id:
+                return snapshot
+        raise KeyError(f"candidate snapshot does not exist: {snapshot_id}")
 
     def _publish_agent_trace(self, record_id: str, backend: Any) -> None:
         take_trace = getattr(backend, "take_trace", None)
@@ -99,7 +335,7 @@ class TournamentController:
             return
         trace = take_trace()
         if trace is not None:
-            self.evidence.publish_record(
+            self.evidence.publish_attempt_record(
                 self.manifest.epoch_id,
                 "agent-traces",
                 record_id,
@@ -116,13 +352,7 @@ class TournamentController:
         repetition: int,
     ) -> SolverCell:
         package = Path(snapshot.package_path)
-        invocation = {
-            "epoch_digest": self.manifest.digest,
-            "candidate_digest": snapshot.package_digest,
-            "solver": to_primitive(solver),
-            "repetition": repetition,
-            "budget": to_primitive(self.manifest.budget),
-        }
+        invocation = self._solver_payload(snapshot, solver, repetition)
         invocation_digest = digest_json(invocation)
         try:
             with tempfile.TemporaryDirectory(prefix="bba-solver-cell-") as temporary:
@@ -250,72 +480,184 @@ class TournamentController:
         }
 
     def run_public_epoch(self) -> None:
-        if self.snapshots:
-            raise RuntimeError("a controller instance can run its public epoch only once")
+        expected = {identity.artifact_id for identity in self.manifest.cohort}
+        if self.validator is None:
+            raise RuntimeError("public epoch execution requires a package validator")
+        if set(self.creator_backends) != expected or set(self.solver_backends) != expected:
+            raise RuntimeError("public epoch execution requires the exact frozen backend cohort")
+        if self._public_closed:
+            return
         self.evidence.freeze_manifest(self.manifest)
-        parents: Dict[str, CandidateSnapshot] = {}
+        self.state.set_phase(self.manifest.epoch_id, "public_running")
+        snapshot_by_key = {
+            (snapshot.creator.artifact_id, snapshot.round_index): snapshot
+            for snapshot in self.snapshots
+        }
+        parents: Dict[str, CandidateSnapshot] = {
+            snapshot.creator.artifact_id: snapshot
+            for snapshot in self.snapshots
+            if snapshot.round_index
+            == max(
+                item.round_index
+                for item in self.snapshots
+                if item.creator.artifact_id == snapshot.creator.artifact_id
+            )
+        }
         feedback: Dict[str, Mapping[str, Any]] = {identity.artifact_id: {} for identity in self.manifest.cohort}
         for round_index in range(self.manifest.thresholds.rounds):
             for creator in self.manifest.cohort:
-                with tempfile.TemporaryDirectory(prefix="bba-creator-output-") as temporary:
-                    output = Path(temporary) / "candidate"
-                    output.mkdir()
-                    parent = parents.get(creator.artifact_id)
+                parent = snapshot_by_key.get((creator.artifact_id, round_index - 1))
+                if parent is not None:
+                    feedback[creator.artifact_id] = self._feedback(parent)
+                snapshot = snapshot_by_key.get((creator.artifact_id, round_index))
+                if snapshot is None:
+                    work_id = self._creator_work_id(creator, round_index)
+                    payload = self._creator_payload(creator, round_index, parent)
+                    if not self.state.claim(
+                        self.manifest.epoch_id, work_id, "creator", payload
+                    ):
+                        raise RuntimeError(
+                            f"creator work is complete but snapshot evidence is missing: {work_id}"
+                        )
                     backend = self.creator_backends[creator.artifact_id]
-                    try:
-                        backend.build(
+                    with tempfile.TemporaryDirectory(prefix="bba-creator-output-") as temporary:
+                        output = Path(temporary) / "candidate"
+                        output.mkdir()
+                        try:
+                            backend.build(
+                                creator,
+                                round_index,
+                                output,
+                                feedback[creator.artifact_id],
+                                Path(parent.package_path) if parent else None,
+                                self.manifest,
+                            )
+                        except Exception as exc:
+                            self.state.fail(self.manifest.epoch_id, work_id, str(exc))
+                            self._publish_agent_trace(
+                                f"{creator.artifact_id}--round-{round_index}--failed",
+                                backend,
+                            )
+                            raise
+                        snapshot = self.evidence.freeze_candidate(
+                            self.manifest.epoch_id,
+                            output,
                             creator,
                             round_index,
-                            output,
-                            feedback[creator.artifact_id],
-                            Path(parent.package_path) if parent else None,
-                            self.manifest,
+                            parent_snapshot_id=parent.snapshot_id if parent else None,
                         )
-                    except Exception:
                         self._publish_agent_trace(
-                            f"{creator.artifact_id}--round-{round_index}--failed",
+                            f"{snapshot.snapshot_id}--creator",
                             backend,
                         )
-                        raise
-                    snapshot = self.evidence.freeze_candidate(
+                    metadata_path = (
+                        self.evidence.epoch_root(self.manifest.epoch_id)
+                        / "candidates"
+                        / snapshot.snapshot_id
+                        / "snapshot.json"
+                    )
+                    self.state.succeed(
                         self.manifest.epoch_id,
-                        output,
-                        creator,
-                        round_index,
-                        parent_snapshot_id=parent.snapshot_id if parent else None,
+                        work_id,
+                        self._evidence_ref(metadata_path),
+                        file_digest(metadata_path),
                     )
-                    self._publish_agent_trace(
-                        f"{snapshot.snapshot_id}--creator",
-                        backend,
-                    )
-                self.snapshots.append(snapshot)
+                    self.snapshots.append(snapshot)
+                    self.snapshots = self._ordered_snapshots(self.snapshots)
+                    snapshot_by_key[(creator.artifact_id, round_index)] = snapshot
                 parents[creator.artifact_id] = snapshot
-                validation = self.validator.validate(
-                    Path(snapshot.package_path),
-                    snapshot.package_digest,
-                    self.manifest.public_seed,
-                )
-                self.validations[snapshot.snapshot_id] = validation
-                self.evidence.publish_record(
-                    self.manifest.epoch_id,
-                    "validations",
-                    snapshot.snapshot_id,
-                    validation,
-                )
-                cells: List[SolverCell] = []
+                validation = self.validations.get(snapshot.snapshot_id)
+                if validation is None:
+                    validation_work_id = self._validation_work_id(snapshot)
+                    validation_payload = self._validation_payload(snapshot)
+                    if not self.state.claim(
+                        self.manifest.epoch_id,
+                        validation_work_id,
+                        "validation",
+                        validation_payload,
+                    ):
+                        raise RuntimeError(
+                            "validation work is complete but evidence is missing: "
+                            + validation_work_id
+                        )
+                    validation = self.validator.validate(
+                        Path(snapshot.package_path),
+                        snapshot.package_digest,
+                        self.manifest.public_seed,
+                    )
+                    validation_path = self.evidence.publish_record_idempotent(
+                        self.manifest.epoch_id,
+                        "validations",
+                        snapshot.snapshot_id,
+                        validation,
+                    )
+                    self.state.succeed(
+                        self.manifest.epoch_id,
+                        validation_work_id,
+                        self._evidence_ref(validation_path),
+                        file_digest(validation_path),
+                    )
+                    self.validations[snapshot.snapshot_id] = validation
+                cells = self.cells.setdefault(snapshot.snapshot_id, [])
+                existing_cells = {
+                    (cell.solver.artifact_id, cell.repetition): cell for cell in cells
+                }
                 if validation.passed:
                     for solver in self.manifest.cohort:
                         for repetition in range(self.manifest.thresholds.solver_repetitions):
+                            cell_key = (solver.artifact_id, repetition)
+                            if cell_key in existing_cells:
+                                continue
+                            solver_work_id = self._solver_work_id(
+                                snapshot, solver, repetition
+                            )
+                            solver_payload = self._solver_payload(
+                                snapshot, solver, repetition
+                            )
+                            if not self.state.claim(
+                                self.manifest.epoch_id,
+                                solver_work_id,
+                                "solver",
+                                solver_payload,
+                            ):
+                                raise RuntimeError(
+                                    "solver work is complete but evidence is missing: "
+                                    + solver_work_id
+                                )
                             cell = self._run_solver_cell(snapshot, solver, repetition)
                             cells.append(cell)
-                            self.evidence.publish_record(
+                            cell_path = self.evidence.publish_record_idempotent(
                                 self.manifest.epoch_id,
                                 "solver-cells",
                                 self._cell_record_id(snapshot, solver, repetition),
                                 cell,
                             )
-                self.cells[snapshot.snapshot_id] = cells
+                            self.state.succeed(
+                                self.manifest.epoch_id,
+                                solver_work_id,
+                                self._evidence_ref(cell_path),
+                                file_digest(cell_path),
+                            )
+                            existing_cells[cell_key] = cell
                 feedback[creator.artifact_id] = self._feedback(snapshot)
+            self.evidence.publish_record_idempotent(
+                self.manifest.epoch_id,
+                "state",
+                f"round-{round_index}-complete",
+                {
+                    "manifest_digest": self.manifest.digest,
+                    "round": round_index,
+                },
+            )
+        if not self._public_run_is_complete():
+            raise RuntimeError("public epoch stopped before all required work was complete")
+        self.evidence.publish_record_idempotent(
+            self.manifest.epoch_id,
+            "state",
+            "public-run-complete",
+            {"manifest_digest": self.manifest.digest},
+        )
+        self.state.set_phase(self.manifest.epoch_id, "awaiting_review")
 
     def select_review_items(self, snapshot: CandidateSnapshot) -> List[str]:
         gold = read_jsonl_strict(Path(snapshot.package_path) / "gold_private_sample.jsonl")
