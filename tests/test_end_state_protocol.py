@@ -18,7 +18,7 @@ from bba.protocol import (
     digest_json,
 )
 from bba.runtime import SandboxUnavailable, SecureSandbox
-from bba.testing import ExecutableCreatorFixture, LocalFixtureSandbox
+from tests.fixtures import ExecutableCreatorFixture, LocalFixtureSandbox
 from bba.validator import PackageValidator
 
 

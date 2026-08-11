@@ -36,7 +36,8 @@ The responsibility boundary is deliberate:
 - A controller-published ADK trace records the exact ADK version, provider-
   qualified identity, session and invocation IDs, model-call count, tool names,
   token usage, and event digests. Prompts and tool arguments are not copied into
-  the trace.
+  the trace. Production backends reject providers that omit usage metadata,
+  because the frozen cumulative token budget would otherwise be unenforceable.
 
 Creators receive workspace-scoped read/write tools and may run generated Python
 only through the credential-free construction sandbox. Solvers receive only
@@ -61,9 +62,10 @@ creator_backends, solver_backends = build_adk_backends(
 )
 ```
 
-`agent.py` exposes a standard ADK `root_agent` for ADK CLI discovery. The live
-tournament agents are created by `AdkCreatorBackend` and `AdkSolverBackend`
-because their tools must be bound to one isolated candidate or solver cell.
+Live tournament agents are created by `AdkCreatorBackend` and
+`AdkSolverBackend` because their tools and ADK sessions must be bound to one
+isolated candidate or solver cell. BBA does not ship a context-free placeholder
+agent.
 
 ## Protocol
 
@@ -184,13 +186,13 @@ Create Python 3.10+ environment and install the pinned runtime:
 
 ```bash
 python3 -m venv .venv
-.venv/bin/pip install -e '.[dev]'
+.venv/bin/pip install -e .
 ```
 
 Run all tests:
 
 ```bash
-.venv/bin/python tests/run_tests.py
+.venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 ```
 
 Inspect the production sandbox boundary:
@@ -207,17 +209,10 @@ Validate a candidate. This refuses to run if the secure sandbox is unavailable:
   --seed 20260811
 ```
 
-Run the deterministic protocol conformance fixture:
-
-```bash
-.venv/bin/python -m bba.cli demo --out /tmp/bba-conformance
-```
-
-The fixture executes a 4x4 cohort over three creator rounds and three solver
-repetitions: 12 immutable candidate snapshots and 144 solver cells. Its local
-runner accepts only source-marked repository fixtures and is never used by the
-production validator. Fixture promotion signatures and model results are not
-scientific evidence.
+The test suite includes a deterministic 4x4 protocol conformance fixture over
+three creator rounds and three solver repetitions: 12 immutable candidate
+snapshots and 144 solver cells. All fixture backends and the fixture-only local
+runner live under `tests/`; none are installed with BBA or exposed by its CLI.
 
 ## Python API
 

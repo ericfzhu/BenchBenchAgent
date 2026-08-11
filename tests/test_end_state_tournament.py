@@ -7,7 +7,7 @@ from pathlib import Path
 from bba.audit import DefectPair
 from bba.evidence import EvidenceStore
 from bba.protocol import AuditStatus, ExperimentManifest, ModelIdentity, PromotionDecision, digest_json
-from bba.testing import CalibratedSolverFixture, ExecutableCreatorFixture, LocalFixtureSandbox
+from tests.fixtures import CalibratedSolverFixture, ExecutableCreatorFixture, LocalFixtureSandbox
 from bba.tournament import TournamentController
 from bba.validator import PackageValidator, read_jsonl_strict
 

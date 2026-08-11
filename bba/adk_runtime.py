@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
 import shutil
 import threading
@@ -100,6 +101,7 @@ class AdkInvocationTrace:
     prompt_tokens: int
     output_tokens: int
     total_tokens: int
+    usage_metadata_complete: bool
     started_at: str
     finished_at: str
     status: str
@@ -109,9 +111,11 @@ class AdkInvocationTrace:
 class _EvidencePlugin(BasePlugin):
     """Capture hashes and usage without retaining prompts or tool arguments."""
 
-    def __init__(self) -> None:
+    def __init__(self, token_budget: int) -> None:
         super().__init__(name=f"bba-evidence-{uuid4().hex}")
+        self.token_budget = token_budget
         self.model_calls = 0
+        self.usage_reports = 0
         self.tool_calls = []
         self.event_digests = []
         self.final_response_digest = None
@@ -120,15 +124,26 @@ class _EvidencePlugin(BasePlugin):
         self.total_tokens = 0
 
     async def before_model_callback(self, *, callback_context, llm_request):
+        remaining = self.token_budget - self.total_tokens
+        if remaining <= 0:
+            raise RuntimeError("frozen ADK token budget exhausted")
+        if llm_request.config is None:
+            llm_request.config = types.GenerateContentConfig(max_output_tokens=remaining)
+        else:
+            configured = llm_request.config.max_output_tokens
+            llm_request.config.max_output_tokens = min(configured or remaining, remaining)
         self.model_calls += 1
         return None
 
     async def after_model_callback(self, *, callback_context, llm_response):
         usage = llm_response.usage_metadata
         if usage is not None:
+            self.usage_reports += 1
             self.prompt_tokens += int(getattr(usage, "prompt_token_count", 0) or 0)
             self.output_tokens += int(getattr(usage, "candidates_token_count", 0) or 0)
             self.total_tokens += int(getattr(usage, "total_token_count", 0) or 0)
+            if self.total_tokens > self.token_budget:
+                raise RuntimeError("frozen ADK token budget exceeded")
         return None
 
     async def before_tool_callback(self, *, tool, tool_args, tool_context):
@@ -191,6 +206,7 @@ async def _run_agent(
     message: str,
     timeout_seconds: int,
     max_llm_calls: int,
+    token_budget: int,
     session_token: str,
     trace_callback: Callable[[AdkInvocationTrace], None],
 ) -> None:
@@ -198,7 +214,7 @@ async def _run_agent(
     session_id = f"{role}-{session_token}"
     invocation_id = f"inv-{session_token}"
     user_id = identity.artifact_id
-    plugin = _EvidencePlugin()
+    plugin = _EvidencePlugin(token_budget)
     session_service = InMemorySessionService()
     await session_service.create_session(
         app_name=app_name,
@@ -252,6 +268,7 @@ async def _run_agent(
                 prompt_tokens=plugin.prompt_tokens,
                 output_tokens=plugin.output_tokens,
                 total_tokens=plugin.total_tokens,
+                usage_metadata_complete=plugin.usage_reports == plugin.model_calls,
                 started_at=started_at,
                 finished_at=_utc_now(),
                 status=status,
@@ -260,8 +277,9 @@ async def _run_agent(
 
 
 class _TraceBackend:
-    def __init__(self) -> None:
+    def __init__(self, require_usage_metadata: bool) -> None:
         self._last_trace: Optional[AdkInvocationTrace] = None
+        self._require_usage_metadata = require_usage_metadata
 
     def _save_trace(self, trace: AdkInvocationTrace) -> None:
         self._last_trace = trace
@@ -270,6 +288,16 @@ class _TraceBackend:
         trace = self._last_trace
         self._last_trace = None
         return trace
+
+    def _verify_usage_metadata(self) -> None:
+        if (
+            self._require_usage_metadata
+            and self._last_trace is not None
+            and not self._last_trace.usage_metadata_complete
+        ):
+            raise ProviderFailure(
+                "ADK provider omitted token usage required for budget enforcement"
+            )
 
 
 class AdkCreatorBackend(_TraceBackend):
@@ -283,8 +311,9 @@ class AdkCreatorBackend(_TraceBackend):
         construction_sandbox: Optional[SecureSandbox] = None,
         max_files: int = 512,
         max_bytes: int = 16 * 1024 * 1024,
+        require_usage_metadata: bool = True,
     ) -> None:
-        super().__init__()
+        super().__init__(require_usage_metadata)
         self.model = model
         self.instruction = instruction
         self.prompt_digest = digest_json(instruction)
@@ -328,7 +357,14 @@ class AdkCreatorBackend(_TraceBackend):
             if not target.is_file() or offset < 0 or not 1 <= limit <= 262144:
                 raise ValueError("invalid candidate read request")
             data = target.read_bytes()[offset:offset + limit]
-            return {"path": path, "offset": offset, "content": data.decode("utf-8")}
+            total_bytes = target.stat().st_size
+            return {
+                "path": path,
+                "offset": offset,
+                "total_bytes": total_bytes,
+                "eof": offset + len(data) >= total_bytes,
+                "content": data.decode("utf-8"),
+            }
 
         def write_candidate_file(path: str, content: str) -> Dict[str, Any]:
             """Atomically create or replace one UTF-8 candidate file.
@@ -354,7 +390,11 @@ class AdkCreatorBackend(_TraceBackend):
                 temporary.write_bytes(data)
                 temporary.replace(target)
                 finished = False
-            return {"path": path, "bytes": len(data), "sha256": digest_json(content)}
+            return {
+                "path": path,
+                "bytes": len(data),
+                "sha256": hashlib.sha256(data).hexdigest(),
+            }
 
         def delete_candidate_file(path: str) -> Dict[str, Any]:
             """Delete one regular candidate file during an adaptive repair.
@@ -440,6 +480,7 @@ class AdkCreatorBackend(_TraceBackend):
                 message=message,
                 timeout_seconds=manifest.budget.creator_seconds,
                 max_llm_calls=manifest.budget.max_llm_calls,
+                token_budget=manifest.budget.max_tokens,
                 session_token=token,
                 trace_callback=self._save_trace,
             ))
@@ -447,6 +488,7 @@ class AdkCreatorBackend(_TraceBackend):
             raise ProviderFailure(str(exc) or "creator invocation timed out") from exc
         except Exception as exc:
             raise ProviderFailure(f"ADK creator invocation failed: {exc}") from exc
+        self._verify_usage_metadata()
         if not finished:
             raise ProviderFailure("creator agent ended without calling finish_candidate")
 
@@ -454,8 +496,14 @@ class AdkCreatorBackend(_TraceBackend):
 class AdkSolverBackend(_TraceBackend):
     """A blind ADK solver with read-only bundle tools and explicit submission."""
 
-    def __init__(self, model: ModelLike, *, instruction: str = SOLVER_INSTRUCTION) -> None:
-        super().__init__()
+    def __init__(
+        self,
+        model: ModelLike,
+        *,
+        instruction: str = SOLVER_INSTRUCTION,
+        require_usage_metadata: bool = True,
+    ) -> None:
+        super().__init__(require_usage_metadata)
         self.model = model
         self.instruction = instruction
         self.prompt_digest = digest_json(instruction)
@@ -495,12 +543,22 @@ class AdkSolverBackend(_TraceBackend):
             if not target.is_file() or offset < 0 or not 1 <= limit <= 262144:
                 raise ValueError("invalid solver bundle read request")
             raw = target.read_bytes()[offset:offset + limit]
+            total_bytes = target.stat().st_size
+            metadata = {
+                "path": path,
+                "offset": offset,
+                "total_bytes": total_bytes,
+                "eof": offset + len(raw) >= total_bytes,
+            }
             try:
-                return {"path": path, "offset": offset, "encoding": "utf-8", "content": raw.decode("utf-8")}
+                return {
+                    **metadata,
+                    "encoding": "utf-8",
+                    "content": raw.decode("utf-8"),
+                }
             except UnicodeDecodeError:
                 return {
-                    "path": path,
-                    "offset": offset,
+                    **metadata,
                     "encoding": "base64",
                     "content": base64.b64encode(raw).decode("ascii"),
                 }
@@ -563,6 +621,7 @@ class AdkSolverBackend(_TraceBackend):
                 message=message,
                 timeout_seconds=manifest.budget.solver_seconds,
                 max_llm_calls=manifest.budget.max_llm_calls,
+                token_budget=manifest.budget.max_tokens,
                 session_token=token,
                 trace_callback=self._save_trace,
             ))
@@ -572,6 +631,7 @@ class AdkSolverBackend(_TraceBackend):
             ) from exc
         except Exception as exc:
             raise ProviderFailure(f"ADK solver invocation failed: {exc}") from exc
+        self._verify_usage_metadata()
         if set(submitted) != expected_set:
             raise PredictionParseFailure(
                 f"solver submitted {len(submitted)} of {len(expected_set)} predictions"
@@ -600,6 +660,7 @@ def build_adk_backends(
 ) -> Tuple[Mapping[str, AdkCreatorBackend], Mapping[str, AdkSolverBackend]]:
     """Build the exact creator and solver backend maps required by a controller."""
     overrides = dict(model_overrides or {})
+    sandbox = construction_sandbox or SecureSandbox()
     creators = {}
     solvers = {}
     for identity in manifest.cohort:
@@ -607,26 +668,10 @@ def build_adk_backends(
         creators[identity.artifact_id] = AdkCreatorBackend(
             model,
             instruction=creator_instruction,
-            construction_sandbox=construction_sandbox,
+            construction_sandbox=sandbox,
         )
         solvers[identity.artifact_id] = AdkSolverBackend(
             model,
             instruction=solver_instruction,
         )
     return creators, solvers
-
-
-def build_protocol_agent(model: ModelLike) -> Agent:
-    """Return the ADK-discoverable BBA protocol operator agent."""
-    return Agent(
-        name="bba_protocol_operator",
-        model=model,
-        mode="chat",
-        instruction=(
-            "You operate BenchBenchAgent epochs. Explain and inspect the frozen "
-            "two-sided protocol, but never claim that an unsigned candidate is "
-            "canonical and never expose sealed holdout material. Live creator "
-            "and solver work is executed by bba.adk_runtime backends under the "
-            "trusted TournamentController."
-        ),
-    )

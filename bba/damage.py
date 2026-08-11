@@ -54,9 +54,8 @@ def create_damage_variants(source: Path, output_root: Path) -> Dict[str, Path]:
 
     noop = _copy(source, output_root / "noop_generator")
     (noop / "generator.py").write_text(
-        '"""BBA_TEST_FIXTURE controlled no-op generator."""\n',
+        '"""Controlled no-op generator for evaluator sensitivity audit."""\n',
         encoding="utf-8",
     )
     variants["noop_generator"] = noop
     return variants
-

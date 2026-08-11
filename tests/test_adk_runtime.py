@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -19,7 +20,8 @@ from bba.adk_runtime import (
     AdkCreatorBackend,
     AdkSolverBackend,
 )
-from bba.protocol import ExperimentManifest, ModelIdentity, digest_json
+from bba.errors import ProviderFailure
+from bba.protocol import ExperimentManifest, ModelIdentity, ResourceBudget, digest_json
 
 
 class ScriptedLlm(BaseLlm):
@@ -39,21 +41,35 @@ class ScriptedLlm(BaseLlm):
 
 
 def _tool_call(call_id: str, name: str, args: dict) -> LlmResponse:
-    return LlmResponse(content=types.Content(
-        role="model",
-        parts=[types.Part(function_call=types.FunctionCall(
-            id=call_id,
-            name=name,
-            args=args,
-        ))],
-    ))
+    return LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[types.Part(function_call=types.FunctionCall(
+                id=call_id,
+                name=name,
+                args=args,
+            ))],
+        ),
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=1,
+            candidates_token_count=1,
+            total_token_count=2,
+        ),
+    )
 
 
 def _final(text: str = "complete") -> LlmResponse:
-    return LlmResponse(content=types.Content(
-        role="model",
-        parts=[types.Part(text=text)],
-    ))
+    return LlmResponse(
+        content=types.Content(
+            role="model",
+            parts=[types.Part(text=text)],
+        ),
+        usage_metadata=types.GenerateContentResponseUsageMetadata(
+            prompt_token_count=1,
+            candidates_token_count=1,
+            total_token_count=2,
+        ),
+    )
 
 
 class TestAdkRuntime(unittest.TestCase):
@@ -115,6 +131,8 @@ class TestAdkRuntime(unittest.TestCase):
             ("write_candidate_file", "finish_candidate"),
         )
         self.assertEqual(trace.status, "success")
+        self.assertTrue(trace.usage_metadata_complete)
+        self.assertEqual(trace.total_tokens, 6)
         self.assertTrue(trace.final_response_digest)
 
     def test_solver_requires_explicit_complete_tool_submission(self):
@@ -144,6 +162,32 @@ class TestAdkRuntime(unittest.TestCase):
         self.assertEqual(trace.tool_calls, ("submit_predictions",))
         self.assertEqual(trace.model_calls, 2)
         self.assertTrue(trace.session_id.startswith("solver-"))
+
+    def test_cumulative_token_budget_is_enforced(self):
+        model = ScriptedLlm(model="scripted-budget", responses=[
+            _tool_call("write-1", "write_candidate_file", {
+                "path": "README.md",
+                "content": "over budget",
+            }),
+        ])
+        backend = AdkCreatorBackend(model)
+        constrained = replace(
+            self.manifest,
+            budget=ResourceBudget(max_tokens=1),
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(ProviderFailure):
+                backend.build(
+                    self.identity,
+                    0,
+                    Path(temporary),
+                    {},
+                    None,
+                    constrained,
+                )
+        trace = backend.take_trace()
+        self.assertEqual(trace.status, "provider_error")
+        self.assertEqual(trace.total_tokens, 2)
 
 
 if __name__ == "__main__":

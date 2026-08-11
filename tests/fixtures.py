@@ -204,4 +204,3 @@ class CalibratedSolverFixture:
                 answer = (answer + 1) % 997
             predictions.append({"id": item["id"], "answer": answer})
         return predictions
-
