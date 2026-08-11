@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence
 
 from bba.audit import DefectPair, audit_evaluator
+from bba.errors import PredictionParseFailure, ProviderFailure, SolverTimedOut
 from bba.evidence import EvidenceStore, file_digest
 from bba.protocol import (
     CandidateSnapshot,
@@ -30,18 +31,6 @@ from bba.protocol import (
 from bba.registry import PromotionRegistry
 from bba.scoring import CandidateEvaluation, classify_candidate, matrix, rank_creators, rank_solvers
 from bba.validator import PackageValidator, read_jsonl_strict, validate_answer_rows, validate_item_rows, write_jsonl
-
-
-class ProviderFailure(RuntimeError):
-    pass
-
-
-class SolverTimedOut(RuntimeError):
-    pass
-
-
-class PredictionParseFailure(RuntimeError):
-    pass
 
 
 class CreatorBackend(Protocol):
@@ -86,6 +75,14 @@ class TournamentController:
         expected = {identity.artifact_id for identity in manifest.cohort}
         if set(self.creator_backends) != expected or set(self.solver_backends) != expected:
             raise ValueError("creator and solver backends must cover the exact frozen cohort")
+        for backend in self.creator_backends.values():
+            prompt_digest = getattr(backend, "prompt_digest", None)
+            if prompt_digest is not None and prompt_digest != manifest.creator_prompt_digest:
+                raise ValueError("creator backend prompt does not match the frozen manifest")
+        for backend in self.solver_backends.values():
+            prompt_digest = getattr(backend, "prompt_digest", None)
+            if prompt_digest is not None and prompt_digest != manifest.solver_prompt_digest:
+                raise ValueError("solver backend prompt does not match the frozen manifest")
         self.snapshots: List[CandidateSnapshot] = []
         self.validations: Dict[str, Any] = {}
         self.cells: Dict[str, List[SolverCell]] = {}
@@ -93,6 +90,19 @@ class TournamentController:
         self._public_closed = False
         self._audit_public_scores: Optional[Dict[str, float]] = None
         self._audit_defect_pairs: tuple = ()
+
+    def _publish_agent_trace(self, record_id: str, backend: Any) -> None:
+        take_trace = getattr(backend, "take_trace", None)
+        if take_trace is None:
+            return
+        trace = take_trace()
+        if trace is not None:
+            self.evidence.publish_record(
+                self.manifest.epoch_id,
+                "agent-traces",
+                record_id,
+                trace,
+            )
 
     def _cell_record_id(self, snapshot: CandidateSnapshot, solver: ModelIdentity, repetition: int) -> str:
         return f"{snapshot.snapshot_id}--{solver.artifact_id}--r{repetition}"
@@ -119,13 +129,20 @@ class TournamentController:
                 shutil.copytree(package / "solver_bundle", public_bundle)
                 items = read_jsonl_strict(public_bundle / "items_private_sample.jsonl")
                 item_ids = validate_item_rows(items, self.manifest.thresholds.sample_count)
-                predictions = list(self.solver_backends[solver.artifact_id].solve(
-                    solver,
-                    public_bundle,
-                    items,
-                    repetition,
-                    self.manifest,
-                ))
+                backend = self.solver_backends[solver.artifact_id]
+                try:
+                    predictions = list(backend.solve(
+                        solver,
+                        public_bundle,
+                        items,
+                        repetition,
+                        self.manifest,
+                    ))
+                finally:
+                    self._publish_agent_trace(
+                        self._cell_record_id(snapshot, solver, repetition),
+                        backend,
+                    )
                 prediction_ids = validate_answer_rows(
                     predictions,
                     self.manifest.thresholds.sample_count,
@@ -242,20 +259,32 @@ class TournamentController:
                     output = Path(temporary) / "candidate"
                     output.mkdir()
                     parent = parents.get(creator.artifact_id)
-                    self.creator_backends[creator.artifact_id].build(
-                        creator,
-                        round_index,
-                        output,
-                        feedback[creator.artifact_id],
-                        Path(parent.package_path) if parent else None,
-                        self.manifest,
-                    )
+                    backend = self.creator_backends[creator.artifact_id]
+                    try:
+                        backend.build(
+                            creator,
+                            round_index,
+                            output,
+                            feedback[creator.artifact_id],
+                            Path(parent.package_path) if parent else None,
+                            self.manifest,
+                        )
+                    except Exception:
+                        self._publish_agent_trace(
+                            f"{creator.artifact_id}--round-{round_index}--failed",
+                            backend,
+                        )
+                        raise
                     snapshot = self.evidence.freeze_candidate(
                         self.manifest.epoch_id,
                         output,
                         creator,
                         round_index,
                         parent_snapshot_id=parent.snapshot_id if parent else None,
+                    )
+                    self._publish_agent_trace(
+                        f"{snapshot.snapshot_id}--creator",
+                        backend,
                     )
                 self.snapshots.append(snapshot)
                 parents[creator.artifact_id] = snapshot

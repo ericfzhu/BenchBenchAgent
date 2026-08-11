@@ -77,6 +77,7 @@ class ResourceBudget:
     creator_seconds: int = 2400
     solver_seconds: int = 1500
     max_tokens: int = 16000
+    max_llm_calls: int = 64
     memory_mb: int = 2048
     process_limit: int = 64
 
@@ -85,6 +86,7 @@ class ResourceBudget:
             self.creator_seconds,
             self.solver_seconds,
             self.max_tokens,
+            self.max_llm_calls,
             self.memory_mb,
             self.process_limit,
         ) <= 0:

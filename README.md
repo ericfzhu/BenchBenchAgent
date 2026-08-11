@@ -17,6 +17,54 @@ This design follows Rohit Krishnan's
 The outer evaluator audit follows Ethan Mollick's
 [BenchBenchBench](https://github.com/emollick/benchbenchbench).
 
+## Google ADK runtime
+
+BBA uses Google's Python Agent Development Kit **2.6.3** as a required,
+exactly pinned runtime dependency. It does not contain a home-grown workflow
+fallback.
+
+The responsibility boundary is deliberate:
+
+- ADK `Agent`, `App`, `Runner`, sessions, function tools, plugins, and event
+  streams execute creator and solver model turns.
+- `TournamentController` owns round scheduling, immutable snapshots, package
+  validation, the creator-by-solver matrix, scoring, rankings, promotion, and
+  sealed holdout release.
+- Creator and solver calls get a new `InMemorySessionService` and isolated ADK
+  session for every creator round and solver-cell repetition. No conversational
+  state crosses a cell boundary.
+- A controller-published ADK trace records the exact ADK version, provider-
+  qualified identity, session and invocation IDs, model-call count, tool names,
+  token usage, and event digests. Prompts and tool arguments are not copied into
+  the trace.
+
+Creators receive workspace-scoped read/write tools and may run generated Python
+only through the credential-free construction sandbox. Solvers receive only
+read-only access to the copied `solver_bundle` and must call
+`submit_predictions` with one complete prediction set. Prose output is never
+silently interpreted as benchmark evidence.
+
+Native Google models can be resolved from a `ModelIdentity` directly. Other
+providers remain first-class ADK models by supplying an explicit
+`google.adk.models.BaseLlm` implementation or provider adapter for that frozen
+identity:
+
+```python
+from bba.adk_runtime import build_adk_backends
+
+creator_backends, solver_backends = build_adk_backends(
+    manifest,
+    model_overrides={
+        identity.artifact_id: provider_adk_model,
+    },
+    construction_sandbox=secure_sandbox,
+)
+```
+
+`agent.py` exposes a standard ADK `root_agent` for ADK CLI discovery. The live
+tournament agents are created by `AdkCreatorBackend` and `AdkSolverBackend`
+because their tools must be bound to one isolated candidate or solver cell.
+
 ## Protocol
 
 Each epoch freezes:
@@ -132,22 +180,29 @@ represented as a behavioral audit profile.
 
 ## Usage
 
-Run all tests using only the standard library:
+Create Python 3.10+ environment and install the pinned runtime:
 
 ```bash
-python3 tests/run_tests.py
+python3 -m venv .venv
+.venv/bin/pip install -e '.[dev]'
+```
+
+Run all tests:
+
+```bash
+.venv/bin/python tests/run_tests.py
 ```
 
 Inspect the production sandbox boundary:
 
 ```bash
-python3 -m bba.cli sandbox-status
+.venv/bin/python -m bba.cli sandbox-status
 ```
 
 Validate a candidate. This refuses to run if the secure sandbox is unavailable:
 
 ```bash
-python3 -m bba.cli verify-package \
+.venv/bin/python -m bba.cli verify-package \
   --package /absolute/path/to/candidate \
   --seed 20260811
 ```
@@ -155,7 +210,7 @@ python3 -m bba.cli verify-package \
 Run the deterministic protocol conformance fixture:
 
 ```bash
-python3 -m bba.cli demo --out /tmp/bba-conformance
+.venv/bin/python -m bba.cli demo --out /tmp/bba-conformance
 ```
 
 The fixture executes a 4x4 cohort over three creator rounds and three solver
@@ -171,7 +226,9 @@ The principal interfaces are:
 - `ExperimentManifest`: frozen epoch protocol and hidden commitments;
 - `TournamentController`: creation, validation, solver matrix, review, closure,
   and holdout lifecycle;
-- `CreatorBackend` / `SolverBackend`: provider integration boundaries;
+- `AdkCreatorBackend` / `AdkSolverBackend`: native ADK execution boundaries;
+- `build_adk_backends`: exact-cohort ADK backend construction and model
+  adapter binding;
 - `PackageValidator` / `SecureSandbox`: fail-closed package execution;
 - `PromotionRegistry`: signed append-only canonical decisions; and
 - `audit_evaluator`: decision-level BenchBenchBench metric vector.
@@ -182,8 +239,9 @@ not rewrite historical runs.
 
 ## Status
 
-Version 0.2 implements the complete protocol and deterministic end-to-end
-conformance harness. Live model providers are intentionally adapter interfaces:
-each provider must establish an audited credential and filesystem boundary
-before it is eligible for a real epoch. BBA never falls back to an unrestricted
-host model call.
+Version 0.3 implements the complete protocol, a deterministic end-to-end
+conformance harness, and native Google ADK 2.6.3 creator/solver execution. Each
+provider adapter must establish audited credentials, a frozen model identity,
+and the required filesystem boundary before it is eligible for a real epoch.
+BBA never falls back to an unrestricted host model call or a substitute agent
+runtime.

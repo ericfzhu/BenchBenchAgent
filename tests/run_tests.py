@@ -12,7 +12,7 @@ def main():
         sys.path.insert(0, workspace_dir)
 
     print("=" * 70)
-    print(" BenchBenchAgent (BBA) ADK 2.0 Test Suite Runner")
+    print(" BenchBenchAgent (BBA) Google ADK 2.6.3 Test Suite Runner")
     print("=" * 70)
 
     loader = unittest.TestLoader()

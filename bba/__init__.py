@@ -1,8 +1,8 @@
 """BenchBenchAgent end-state tournament protocol.
 
 The :mod:`bba` package implements a two-sided creator/solver tournament with
-immutable evidence, human-gated promotion, and a sealed holdout audit.  The
-older top-level modules remain available as a compatibility demo.
+immutable evidence, human-gated promotion, a sealed holdout audit, and native
+Google ADK creator and solver execution.
 """
 
 from bba.protocol import (
@@ -15,6 +15,7 @@ from bba.protocol import (
 )
 from bba.audit import audit_evaluator
 from bba.tournament import TournamentController
+from bba.adk_runtime import AdkCreatorBackend, AdkSolverBackend, build_adk_backends
 
 __all__ = [
     "AuditStatus",
@@ -24,5 +25,8 @@ __all__ = [
     "ModelIdentity",
     "PromotionDecision",
     "TournamentController",
+    "AdkCreatorBackend",
+    "AdkSolverBackend",
     "audit_evaluator",
+    "build_adk_backends",
 ]
