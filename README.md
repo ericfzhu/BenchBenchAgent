@@ -1,6 +1,6 @@
 # BenchBenchAgent: Adversarial Benchmark Co-Evolution Framework
 
-An autonomous, GAN-inspired framework where AI agents adversarially co-evolve to design, stress-test, and solve verifiable frontier benchmarks.
+An autonomous, GAN-inspired framework where AI agents adversarially co-evolve to design, stress-test, and solve verifiable frontier benchmarks using **Google Agent Development Kit (ADK) Python 2.0** and **Vertex AI**.
 
 ---
 
@@ -10,8 +10,8 @@ Traditional AI benchmarks suffer from rapid saturation, brittle grading, and hig
 
 **BenchBenchAgent (BBA)** is an autonomous, multi-agent adversarial optimization framework that treats benchmark generation and solving as a **minimax game** between two specialized agent roles:
 
-1. **The Creator Agent (Generator / Adversary)**: Autonomously invents, compiles, and refines complex benchmark environments designed to push frontier models to their failure boundaries while maintaining provable mathematical/procedural solvability.
-2. **The Solver Agent (Discriminator / Grunt)**: Programmatically explores the public solver bundles, writes bespoke Python parsing/execution scripts in a sandbox REPL, and solves items with high precision.
+1. **The Creator Agent (Generator / Adversary)**: Autonomously invents, compiles, and refines complex benchmark environments across the open-ended landscape of Bureaucratic Forensics and multi-layered deterministic reasoning.
+2. **The Solver Agent (Discriminator / Grunt)**: Programmatically explores public solver bundles, writes bespoke Python parsing/execution scripts in an isolated REPL sandbox, and solves items with exact Decimal precision.
 3. **The Referee & Optimizer Engine**: Evaluates the game state, enforces strict sandbox isolation, computes adversarial loss gradients, and feeds diagnostic traces back to both agents to drive continuous co-evolution.
 
 ```mermaid
@@ -19,10 +19,11 @@ flowchart TD
     subgraph BBA Co-Evolution Engine
         A["<b>Creator Agent (Generator)</b><br/>Objective: Maximize Task Difficulty<br/><i>min Score(Solver, Task)</i>"] -->|Generates Benchmark Bundle T| B{Sandbox Mechanical Validation}
         B -->|Pass 30/30 Gold & 0/30 Control| C["<b>Solver Agent (Discriminator)</b><br/>Objective: Maximize Accuracy<br/><i>max Score(Solver, Task)</i>"]
-        B -->|Fail / Syntax Bug| A
-        C -->|Solver Traces & Failure Logs| D["<b>BBA Referee / Loss Evaluator</b><br/>Computes Adversarial Gradients"]
-        D -->|Feedback: 'Bypassed via heuristic'| A
-        D -->|Feedback: 'Item 12 arithmetic mismatch'| C
+        B -->|Fail / Syntax Bug| D[Repair Agent: Auto-Heal]
+        D --> B
+        C -->|Solver Traces & Failure Logs| E["<b>BBA Referee / Loss Evaluator</b><br/>Computes Adversarial Gradients"]
+        E -->|Feedback: 'Bypassed via heuristic'| A
+        E -->|Feedback: 'Item 12 arithmetic mismatch'| C
     end
 ```
 
@@ -54,21 +55,21 @@ $$\max_{\pi \in \Pi} \; \mathbb{E}_{T \sim \mathcal{D}} \Big[ \text{Score}(S_\pi
 
 ## 3. System Architecture & Components
 
-### 3.1 The Creator Pipeline (`BenchBench-Creator-Agent`)
-* **Domain Synthesizer**: Formulates problem domains with deterministic ground truth (e.g. freight tariff reconciliation, distributed consensus log recovery, enterprise tax compliance).
+### 3.1 The Creator Pipeline (`creator/`)
+* **Domain Synthesizer**: Formulates open-ended problem domains with deterministic ground truth (travel expense forensic reconciliations, commercial lease CAM audits, freight tariffs, policy compliance).
 * **Code Compiler**: Emits `generator.py`, `verifier.py`, `scorer.py`, `benchmark_spec.json`, and `SOLVER_MANIFEST.json`.
-* **Autonomous Preflight Sandbox**:
+* **Autonomous Preflight Sandbox (`sandbox/isolation.py`)**:
   * Runs `generator.py --seed 42` twice to verify bit-for-bit output digest invariance.
   * Validates that `gold_private_sample.jsonl` self-scores $30/30$.
   * Validates that shifted wrong baseline scores exactly $0/30$.
-  * Self-repairs compiler errors and schema violations before releasing the bundle.
+  * Self-repairs compiler errors and schema violations via `creator/repair_agent.py` before releasing the bundle.
 
-### 3.2 The Solver Pipeline (`BenchBench-Solver-Agent`)
+### 3.2 The Solver Pipeline (`solver/`)
 * **Bundle Ingestion**: Recursively reads `SOLVER_MANIFEST.json`, `solver_packet.md`, and raw item assets.
 * **REPL Execution Sandbox**: Writes and executes isolated Python scripts to parse tables, extract metadata, and execute Decimal half-up arithmetic.
 * **Contract Verifier**: Formats and validates predictions strictly against `{"id": "...", "answer": "..."}` JSONL contracts.
 
-### 3.3 The Referee & Harness Engine
+### 3.3 The Referee & Harness Engine (`referee/`, `agent.py`)
 * **Isolation Sandbox**: Guarantees zero leakage of private gold or generator source code to solver processes.
 * **Diagnostic Trace Extractor**: Analyzes solver execution logs (token consumption, bash commands, error traces).
 * **Prompt Gradient Generator**: Translates solver execution traces into actionable natural-language feedback for the next generator iteration.
@@ -117,13 +118,36 @@ Round t:
 
 ---
 
-## 6. Roadmap & Implementation Phases
+## 6. Quickstart & Verification
+
+### Run the Test Suite
+```bash
+python3 tests/run_tests.py
+```
+
+### Run with Vertex AI (Google Cloud)
+```bash
+# 1. Authenticate with Google Cloud
+gcloud auth application-default login
+
+# 2. Configure environment
+export GOOGLE_GENAI_USE_VERTEXAI="True"
+export GOOGLE_CLOUD_PROJECT="your-gcp-project-id"
+export GOOGLE_CLOUD_LOCATION="us-central1"
+
+# 3. Run the adversarial co-evolution workflow
+python3 -c "import agent; agent.run_bba_sync()"
+```
+
+---
+
+## 7. Implementation Roadmap
 
 - [x] **Phase 0: Foundation**: Ingest and audit upstream `benchbench` mechanics and experiment registries.
-- [ ] **Phase 1: Self-Repairing Creator Agent**: Build the autonomous sandbox compilation and preflight self-healing loop for benchmark packages.
-- [ ] **Phase 2: Tool-Augmented Forensic Solver**: Build the REPL-assisted solver agent with structured item iteration and Decimal arithmetic verification.
-- [ ] **Phase 3: Adversarial Co-Evolution Loop**: Connect Creator and Solver into a closed feedback loop with automated trace diagnostics.
-- [ ] **Phase 4: RLVR Integration**: Export converged benchmark environments as Reinforcement Learning with Verifiable Rewards (RLVR) datasets for model post-training.
+- [x] **Phase 1: Self-Repairing Creator Agent**: Autonomous sandbox compilation and preflight self-healing loop for benchmark packages.
+- [x] **Phase 2: Tool-Augmented Forensic Solver**: REPL-assisted solver agent with structured item iteration and Decimal arithmetic verification.
+- [x] **Phase 3: Adversarial Co-Evolution Loop**: Native ADK 2.0 graph workflow with automated refereeing and prompt gradient feedback.
+- [ ] **Phase 4: Live Sweeps & RLVR Export**: Scale out multi-provider sweeps and export converged environments as Reinforcement Learning with Verifiable Rewards (RLVR) datasets.
 
 ---
 
