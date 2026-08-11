@@ -3,6 +3,7 @@
 import json
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from bba.audit import DefectPair, audit_evaluator
@@ -102,6 +103,10 @@ class TestEndStateProtocol(unittest.TestCase):
         with self.assertRaises(ValueError):
             ModelIdentity("meta", "https://models.example.test/v1", "family-a")
 
+    def test_hosted_sandbox_backend_is_rejected(self):
+        with self.assertRaises(ValueError):
+            SandboxCapabilities(backend="gcp-cloud-run")
+
     def test_non_success_cell_cannot_carry_score(self):
         with self.assertRaises(ValueError):
             SolverCell(
@@ -113,13 +118,14 @@ class TestEndStateProtocol(unittest.TestCase):
                 score=ScoreSummary(total=30, correct=0, accuracy=0.0),
             )
 
-    def test_manifest_and_evidence_are_immutable(self):
+    def test_manifest_freeze_is_idempotent_and_conflicts_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = EvidenceStore(Path(temporary))
             path = store.freeze_manifest(manifest())
             original = path.read_bytes()
-            with self.assertRaises(FileExistsError):
-                store.freeze_manifest(manifest())
+            self.assertEqual(store.freeze_manifest(manifest()), path)
+            with self.assertRaises(ValueError):
+                store.freeze_manifest(replace(manifest(), public_seed=99))
             self.assertEqual(path.read_bytes(), original)
             first = store.append_registry_record("history", {"status": "first"})
             second = store.append_registry_record("history", {"status": "second"})

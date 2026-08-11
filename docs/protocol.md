@@ -79,6 +79,9 @@ Each commitment must be a lowercase SHA-256 digest.
 ## 4. Model execution
 
 BBA must use Google Python ADK for creator and solver execution.
+BBA must send model inference through serverless Vertex AI.
+BBA must keep controller work, state, evidence, validation, scoring, and audit calculations on the local machine.
+BBA must not require a deployed model endpoint or another Google Cloud runtime service.
 BBA must make a new ADK session for each invocation.
 BBA must not transfer conversation state between cells.
 
@@ -347,11 +350,32 @@ BBA must keep the public record.
 BBA must retire the revealed holdout.
 BBA must not use that holdout in a later epoch.
 
-## 15. Evidence rules
+## 15. Local state and recovery
+
+One local evidence root must contain the epoch evidence and one SQLite state file.
+The SQLite file is workflow state.
+It is not immutable evidence.
+
+The controller must save one work item for each creator run, validation, and solver cell.
+Each work item must bind its frozen input digest.
+The controller must save immutable evidence before it marks the work item complete.
+
+The controller must restore complete work from immutable evidence after a restart.
+The controller must not repeat complete inference work.
+The controller must reset an interrupted item and start that item again.
+A failed item can start again after the operator corrects the fault.
+
+Only one local process can change an epoch at one time.
+The command-line interface must use a local epoch lock.
+Repeated create, run, review, closure, and audit commands must return the existing result when the requested immutable input is identical.
+They must reject a request that conflicts with existing evidence.
+
+## 16. Evidence rules
 
 BBA must use canonical JSON for evidence digests.
-BBA must store each manifest, snapshot, and evidence record exactly once.
+BBA must publish each manifest, snapshot, and evidence record at one immutable path.
 BBA must refuse to overwrite immutable evidence.
+An identical retry can use the existing record.
 
 Each candidate snapshot ID must bind the creator, round, and package digest.
 Each solver cell must bind the epoch, candidate, solver, repetition, and budget.

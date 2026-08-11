@@ -1,8 +1,8 @@
 """BenchBenchAgent end-state tournament protocol.
 
 The :mod:`bba` package implements a two-sided creator/solver tournament with
-immutable evidence, human-gated promotion, a sealed holdout audit, and native
-Google ADK creator and solver execution through GCP.
+immutable local evidence, restart-safe local state, human-gated promotion, a
+sealed holdout audit, and Google ADK inference through Vertex AI.
 """
 
 from bba.protocol import (
@@ -16,12 +16,16 @@ from bba.protocol import (
 from bba.audit import audit_evaluator
 from bba.tournament import TournamentController
 from bba.adk_runtime import AdkCreatorBackend, AdkSolverBackend, build_adk_backends
+from bba.evidence import EvidenceStore
+from bba.state import LocalStateStore
 
 __all__ = [
     "AuditStatus",
     "CandidateStatus",
     "CellState",
     "ExperimentManifest",
+    "EvidenceStore",
+    "LocalStateStore",
     "ModelIdentity",
     "PromotionDecision",
     "TournamentController",

@@ -10,7 +10,7 @@ import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Optional
 
 from bba.protocol import (
     CandidateSnapshot,
@@ -115,6 +115,8 @@ class EvidenceStore:
         root = self.epoch_root(epoch_id) / "candidates"
         snapshots = []
         for metadata_path in sorted(root.glob("*/snapshot.json")):
+            if metadata_path.parent.name.startswith("."):
+                continue
             snapshot = candidate_snapshot_from_mapping(read_json(metadata_path))
             package_path = metadata_path.parent / "package"
             if tree_digest(package_path) != snapshot.package_digest:
@@ -133,30 +135,61 @@ class EvidenceStore:
         source = Path(source).resolve()
         package_digest = tree_digest(source)
         snapshot_id = f"{creator.artifact_id}.r{round_index}.{package_digest[:12]}"
-        destination = self.epoch_root(epoch_id) / "candidates" / snapshot_id / "package"
-        metadata_path = destination.parent / "snapshot.json"
-        if destination.exists() or metadata_path.exists():
-            raise FileExistsError(f"candidate snapshot already exists: {snapshot_id}")
-        destination.parent.mkdir(parents=True, exist_ok=False)
-        shutil.copytree(source, destination, symlinks=False)
-        if tree_digest(destination) != package_digest:
-            raise RuntimeError("candidate digest changed while freezing snapshot")
-        snapshot = CandidateSnapshot(
-            snapshot_id=snapshot_id,
-            package_digest=package_digest,
-            creator=creator,
-            round_index=round_index,
-            parent_snapshot_id=parent_snapshot_id,
-            created_at=datetime.now(timezone.utc).isoformat(),
-            package_path=str(destination),
-        )
-        atomic_publish_json(metadata_path, snapshot)
-        return snapshot
+        candidates_root = self.epoch_root(epoch_id) / "candidates"
+        final_root = candidates_root / snapshot_id
+        destination = final_root / "package"
+        metadata_path = final_root / "snapshot.json"
+        if metadata_path.is_file() and destination.is_dir():
+            existing = candidate_snapshot_from_mapping(read_json(metadata_path))
+            if (
+                existing.package_digest != package_digest
+                or existing.creator != creator
+                or existing.round_index != round_index
+                or existing.parent_snapshot_id != parent_snapshot_id
+                or tree_digest(destination) != package_digest
+            ):
+                raise FileExistsError(f"candidate snapshot conflicts with evidence: {snapshot_id}")
+            return dataclasses.replace(existing, package_path=str(destination))
+        if final_root.exists():
+            raise RuntimeError(f"candidate snapshot is incomplete: {snapshot_id}")
 
-    def publish_record(self, epoch_id: str, category: str, record_id: str, value: Any) -> Path:
-        destination = self.record_path(epoch_id, category, record_id)
-        atomic_publish_json(destination, value)
-        return destination
+        candidates_root.mkdir(parents=True, exist_ok=True)
+        temporary_root = Path(
+            tempfile.mkdtemp(prefix=".candidate-freeze-", dir=str(candidates_root))
+        )
+        try:
+            temporary_package = temporary_root / "package"
+            shutil.copytree(source, temporary_package, symlinks=False)
+            if tree_digest(temporary_package) != package_digest:
+                raise RuntimeError("candidate digest changed while freezing snapshot")
+            snapshot = CandidateSnapshot(
+                snapshot_id=snapshot_id,
+                package_digest=package_digest,
+                creator=creator,
+                round_index=round_index,
+                parent_snapshot_id=parent_snapshot_id,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                package_path=str(destination),
+            )
+            atomic_publish_json(temporary_root / "snapshot.json", snapshot)
+            try:
+                os.rename(temporary_root, final_root)
+            except FileExistsError:
+                if metadata_path.is_file() and destination.is_dir():
+                    existing = candidate_snapshot_from_mapping(read_json(metadata_path))
+                    if (
+                        existing.package_digest == package_digest
+                        and existing.creator == creator
+                        and existing.round_index == round_index
+                        and existing.parent_snapshot_id == parent_snapshot_id
+                        and tree_digest(destination) == package_digest
+                    ):
+                        return dataclasses.replace(existing, package_path=str(destination))
+                raise
+            return snapshot
+        finally:
+            if temporary_root.exists():
+                shutil.rmtree(temporary_root)
 
     def publish_record_idempotent(
         self,

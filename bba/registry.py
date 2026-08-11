@@ -6,10 +6,14 @@ import hashlib
 import hmac
 from dataclasses import replace
 from pathlib import Path
-from typing import Iterable, Mapping
-
-from bba.evidence import EvidenceStore
-from bba.protocol import PromotionDecision, PromotionRecord, canonical_json
+from bba.evidence import EvidenceStore, read_json
+from bba.protocol import (
+    PromotionDecision,
+    PromotionRecord,
+    canonical_json,
+    promotion_record_from_mapping,
+)
+from bba.state import local_file_lock
 
 
 class PromotionRegistry:
@@ -40,5 +44,17 @@ class PromotionRegistry:
             raise ValueError("review samples must be unique")
         if not record.reviewer_id or not record.key_id or not record.reconstructed_answers_digest:
             raise ValueError("promotion attestation is incomplete")
-        return self.evidence.append_registry_record(self.registry_name, record)
+        with local_file_lock(self.evidence.root, f"registry-{self.registry_name}"):
+            existing = self.find_exact(record)
+            if existing is not None:
+                return existing
+            return self.evidence.append_registry_record(self.registry_name, record)
 
+    def find_exact(self, expected: PromotionRecord) -> Path | None:
+        registry = self.evidence.root / "registries" / self.registry_name
+        for path in sorted(registry.glob("*.json")):
+            body = read_json(path)
+            record = promotion_record_from_mapping(body["record"])
+            if canonical_json(record) == canonical_json(expected):
+                return path
+        return None

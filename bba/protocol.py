@@ -137,13 +137,13 @@ class SandboxCapabilities:
     host_filesystem: bool = False
     ephemeral_home: bool = True
     resource_limits: bool = True
-    backend: str = "gcp-cloud-run"
+    backend: str = "macos-seatbelt"
 
     def __post_init__(self) -> None:
         if self.network or self.host_filesystem or not self.ephemeral_home:
             raise ValueError("BBA generated-code sandboxes must be credential-free and isolated")
-        if not self.backend.strip():
-            raise ValueError("sandbox backend cannot be blank")
+        if self.backend not in {"macos-seatbelt", "trusted-fixture-only"}:
+            raise ValueError("BBA requires the local macos-seatbelt sandbox")
 
 
 @dataclass(frozen=True)

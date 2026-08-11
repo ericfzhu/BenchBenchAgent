@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import fcntl
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -24,6 +26,26 @@ PHASES = (
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+@contextmanager
+def local_file_lock(evidence_root: Path, lock_id: str) -> Iterator[None]:
+    """Allow one local process to change one named resource."""
+
+    if not re.fullmatch(r"[a-zA-Z0-9._-]+", lock_id):
+        raise ValueError("local lock ID must be filesystem safe")
+    lock_root = Path(evidence_root).resolve() / "locks"
+    lock_root.mkdir(parents=True, exist_ok=True)
+    lock_path = lock_root / f"{lock_id}.lock"
+    with lock_path.open("a+b") as handle:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(f"another local process holds lock {lock_id}") from exc
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 class LocalStateStore:
@@ -89,6 +111,17 @@ class LocalStateStore:
                 """
             )
             connection.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION}")
+
+    @staticmethod
+    def _touch_epoch(
+        connection: sqlite3.Connection,
+        epoch_id: str,
+        timestamp: str,
+    ) -> None:
+        connection.execute(
+            "UPDATE epochs SET updated_at = ? WHERE epoch_id = ?",
+            (timestamp, epoch_id),
+        )
 
     @contextmanager
     def _transaction(self) -> Iterator[sqlite3.Connection]:
@@ -177,6 +210,7 @@ class LocalStateStore:
                 "VALUES (?, ?, ?, ?, 'running')",
                 (epoch_id, work_id, attempt, now),
             )
+            self._touch_epoch(connection, epoch_id, now)
             return True
 
     def succeed(
@@ -209,6 +243,7 @@ class LocalStateStore:
                 "WHERE epoch_id = ? AND work_id = ? AND attempt = ?",
                 (now, epoch_id, work_id, attempt),
             )
+            self._touch_epoch(connection, epoch_id, now)
 
     def fail(self, epoch_id: str, work_id: str, error: str) -> None:
         now = _utc_now()
@@ -230,6 +265,7 @@ class LocalStateStore:
                 "WHERE epoch_id = ? AND work_id = ? AND attempt = ?",
                 (error[-4000:], now, epoch_id, work_id, attempt),
             )
+            self._touch_epoch(connection, epoch_id, now)
 
     def reconcile_success(
         self,
@@ -244,7 +280,8 @@ class LocalStateStore:
         now = _utc_now()
         with self._transaction() as connection:
             row = connection.execute(
-                "SELECT kind, payload_digest, status FROM work_items "
+                "SELECT kind, payload_digest, status, attempt_count, evidence_ref, "
+                "evidence_digest FROM work_items "
                 "WHERE epoch_id = ? AND work_id = ?",
                 (epoch_id, work_id),
             ).fetchone()
@@ -252,6 +289,11 @@ class LocalStateStore:
                 row["kind"] != kind or row["payload_digest"] != payload_digest
             ):
                 raise ValueError(f"work identity conflicts with immutable evidence: {work_id}")
+            if row is not None and row["status"] == "succeeded" and (
+                row["evidence_ref"] != evidence_ref
+                or row["evidence_digest"] != evidence_digest
+            ):
+                raise ValueError(f"immutable evidence changed after work completion: {work_id}")
             if row is None:
                 connection.execute(
                     "INSERT INTO work_items "
@@ -274,6 +316,13 @@ class LocalStateStore:
                     "WHERE epoch_id = ? AND work_id = ?",
                     (evidence_ref, evidence_digest, now, epoch_id, work_id),
                 )
+                if row["status"] == "running":
+                    connection.execute(
+                        "UPDATE attempts SET status = 'succeeded', finished_at = ? "
+                        "WHERE epoch_id = ? AND work_id = ? AND attempt = ?",
+                        (now, epoch_id, work_id, row["attempt_count"]),
+                    )
+            self._touch_epoch(connection, epoch_id, now)
 
     def recover_interrupted(self, epoch_id: str) -> int:
         now = _utc_now()
@@ -300,6 +349,8 @@ class LocalStateStore:
                 "WHERE epoch_id = ? AND status = 'running'",
                 ("the prior local process stopped before commit", now, epoch_id),
             )
+            if rows:
+                self._touch_epoch(connection, epoch_id, now)
             return len(rows)
 
     def status(self, epoch_id: str) -> Dict[str, Any]:

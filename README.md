@@ -1,6 +1,6 @@
 # BenchBenchAgent
 
-BenchBenchAgent (BBA) evaluates models that make and solve executable benchmarks.
+BenchBenchAgent (BBA) tests models that make and solve executable benchmarks.
 Each model has two separate roles.
 
 - A creator makes a benchmark package.
@@ -14,43 +14,40 @@ A sealed audit tests the public evaluator after the public epoch is closed.
 BBA uses the method from Rohit Krishnan's [BenchBench](https://www.strangeloopcanon.com/p/introducing-benchbench).
 BBA uses the sealed evaluator audit from Ethan Mollick's [BenchBenchBench](https://github.com/emollick/benchbenchbench).
 
-## System limits
+## Operating model
 
-BBA has these fixed limits:
+BBA is a local application.
+It keeps these functions on the operator's machine:
 
-- BBA uses Google Python Agent Development Kit (ADK) 2.6.3.
-- BBA sends model requests through serverless Vertex AI APIs.
-- BBA does not use direct provider API keys.
-- BBA does not accept deployed model endpoints.
-- BBA runs creator code only in an approved operating-system sandbox.
-- BBA stops if the sandbox is not available.
+- Epoch control and recovery
+- SQLite workflow state
+- Immutable evidence files
+- Package validation and scoring
+- Generated-code sandbox execution
+- Human review records
+- Public ranks and holdout audit calculations
 
-The controller has no production `run-epoch` command at this time.
-You can use the Python API to run one epoch in one process.
-The controller cannot restore a live epoch after the process stops.
-Do not use the present API for an unattended production epoch.
+BBA uses Google Cloud only for serverless model inference.
+It does not use Cloud Run, Cloud Storage, Firestore, Cloud Tasks, or a deployed model endpoint.
+Google Python Agent Development Kit (ADK) 2.6.3 controls each model session.
 
-## Main outputs
+The local sandbox must stop network access and host file access for generated code.
+BBA stops if the sandbox is not available.
 
-BBA stores these outputs:
+## Saved state and resume
 
-- Immutable candidate snapshots
-- Validation records
-- Solver-cell records
-- Creator and solver ranks
-- Signed promotion records
-- Public evaluation records
-- Holdout audit records
-- An append-only benchmark registry
+BBA saves progress after each creator run, validation, and solver cell.
+It stores workflow state in `.bba/bba-state.sqlite3` by default.
+It stores immutable evidence in `.bba/epochs/EPOCH_ID/`.
 
-BBA writes epoch evidence to `epochs/<epoch_id>/`.
-BBA writes registry records to `registries/`.
+If the process stops, run the same `epoch run` command again.
+BBA finds complete evidence and does not repeat that work.
+BBA resets an interrupted work item and starts that item again.
+A local file lock prevents two processes from changing one epoch at the same time.
 
-## Quick start
+## Install
 
 Use Python 3.10 or later.
-
-Create an environment and install BBA:
 
 ```bash
 python3.10 -m venv .venv
@@ -66,61 +63,109 @@ Run the tests:
 Check the local sandbox:
 
 ```bash
-.venv/bin/python -m bba.cli sandbox-status
+.venv/bin/bba sandbox-status
 ```
 
-Authenticate to Google Cloud:
+## Google Cloud setup
+
+Enable Vertex AI and create local Application Default Credentials.
 
 ```bash
+gcloud services enable aiplatform.googleapis.com
 gcloud auth application-default login
 export GOOGLE_CLOUD_PROJECT="your-project-id"
 export GOOGLE_CLOUD_LOCATION="global"
 export GOOGLE_GENAI_USE_ENTERPRISE="TRUE"
 ```
 
-The example manifest is in [`examples/serverless-pilot-manifest.json`](examples/serverless-pilot-manifest.json).
-Replace the project ID and all hidden commitments before you use the file.
+Confirm that each selected Model Garden card shows `Serverless`.
+Do not use a card that shows `Self-deployed`.
 
-Read the [operations guide](docs/operations.md) before you send a live model request.
-The guide gives the GCP setup, model checks, sandbox checks, epoch sequence, review sequence, and audit sequence.
+## Run an epoch
+
+Copy the example manifest.
+Change the project, model IDs, limits, and hidden commitments.
+
+```bash
+cp examples/serverless-pilot-manifest.json epoch-manifest.json
+```
+
+Create the local epoch:
+
+```bash
+.venv/bin/bba epoch create \
+  --manifest epoch-manifest.json \
+  --evidence-root .bba
+```
+
+Run or resume the public tournament:
+
+```bash
+.venv/bin/bba epoch run \
+  --epoch-id EPOCH_ID \
+  --evidence-root .bba
+```
+
+Inspect saved progress at any time:
+
+```bash
+.venv/bin/bba epoch status \
+  --epoch-id EPOCH_ID \
+  --evidence-root .bba
+```
+
+The public run has three creator rounds.
+Each valid snapshot receives the full blind solver panel.
+The command ends when all required public evidence exists.
+
+Human review, public closure, and holdout audit use separate commands.
+This separation keeps hidden evidence outside the creator feedback loop.
+See the [operations guide](docs/operations.md) for the complete command sequence and input file formats.
 
 ## Candidate package check
 
-Use this command to validate one candidate package:
+Use this command to validate one package:
 
 ```bash
-.venv/bin/python -m bba.cli verify-package \
+.venv/bin/bba verify-package \
   --package /absolute/path/to/candidate \
   --seed 20260812
 ```
 
 The command returns a nonzero status if the package is not valid.
 
+## Main outputs
+
+BBA stores these outputs:
+
+- Immutable candidate snapshots and revision links
+- Validation records
+- Tagged solver-cell records
+- Creator and solver ranks
+- Signed promotion records
+- Public evaluation records
+- Holdout audit records
+- An append-only benchmark registry
+
+Non-success solver states do not contain a numeric score.
+A timeout or provider error is not a zero score.
+
 ## Documents
 
-- [Protocol specification](docs/protocol.md): Normative rules for an epoch.
-- [Operations guide](docs/operations.md): Setup and operating procedures.
+- [Protocol specification](docs/protocol.md): Required rules for one epoch.
+- [Operations guide](docs/operations.md): Local setup, commands, recovery, review, and audit.
 - [Serverless pilot manifest](examples/serverless-pilot-manifest.json): A small cohort template.
 
-## Public Python interfaces
+## Main Python interfaces
 
 | Interface | Function |
 | --- | --- |
 | `ExperimentManifest` | Stores the frozen epoch configuration. |
-| `TournamentController` | Controls the public epoch, review, closure, and audit. |
-| `AdkCreatorBackend` | Runs one creator with ADK. |
-| `AdkSolverBackend` | Runs one solver with ADK. |
-| `build_adk_backends` | Makes the creator and solver backends. |
+| `TournamentController` | Controls restore, public work, review, closure, and audit. |
+| `LocalStateStore` | Stores transactional local workflow state. |
+| `EvidenceStore` | Stores immutable local evidence. |
+| `AdkCreatorBackend` | Runs one creator with ADK and Vertex AI. |
+| `AdkSolverBackend` | Runs one solver with ADK and Vertex AI. |
 | `PackageValidator` | Checks a candidate package. |
-| `SecureSandbox` | Runs creator code in an approved sandbox. |
+| `SecureSandbox` | Runs generated code in a local operating-system sandbox. |
 | `PromotionRegistry` | Stores signed promotion records. |
-| `audit_evaluator` | Calculates the holdout audit values. |
-
-## Current implementation
-
-Version 0.4 contains the full protocol data model and the deterministic end-to-end test.
-The test runs four models through three rounds.
-The test makes 12 snapshots and 144 solver cells.
-
-The command-line interface supports package validation and sandbox inspection.
-The next operating milestone is a restart-safe epoch command.

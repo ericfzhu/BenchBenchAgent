@@ -1,53 +1,55 @@
 # BBA operations guide
 
-This guide tells an operator how to prepare and run the present BBA implementation.
+This guide tells an operator how to run one BBA epoch.
 Read the [protocol specification](protocol.md) before you run a paid epoch.
-Google Python Agent Development Kit (ADK) supplies the model agent runtime.
 
-## 1. Current operating limit
+## 1. System boundary
 
-The present command-line interface can inspect the sandbox and validate one package.
-It cannot run or resume a complete live epoch.
+BBA runs on one local machine.
+BBA uses local resources for these functions:
 
-You can run a live public epoch with the Python API.
-You must keep the Python process alive through the public run, human review, public closure, and holdout audit.
-If the process stops, the controller cannot restore its live state from the evidence files.
+- The controller
+- SQLite workflow state
+- Evidence storage
+- Package generation workspaces
+- Sandbox execution
+- Validation and scoring
+- Review records
+- Rank and audit calculations
 
-Use the end-to-end test for a safe local demonstration.
-Do not use the present controller for an unattended production epoch.
+BBA uses Google Cloud only for serverless model inference.
+BBA does not deploy a model.
+BBA does not use a Google Cloud database, queue, storage bucket, or compute service.
 
-## 2. Required services
+The operator must back up the local evidence root.
+The backup must keep file contents and directory names unchanged.
+
+## 2. Required items
 
 Prepare these items:
 
 - Python 3.10 or later
 - Google Cloud CLI
 - A Google Cloud project with billing
-- Vertex AI API
-- Access to each selected Model Garden model
-- A supported operating-system sandbox
-- Storage for immutable evidence
+- Vertex AI API access
+- Access to each selected serverless Model Garden model
+- A supported local operating-system sandbox
+- Sufficient local disk space
 - An independent reviewer
 - Sealed holdout material
 
 Google documents the current Vertex AI setup in the [Vertex AI quickstart](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/start/quickstart).
-Google documents the Cloud Run boundary in [Code execution in Cloud Run](https://docs.cloud.google.com/run/docs/code-execution).
 
 ## 3. Install BBA
 
-Create a virtual environment:
+Create a virtual environment and install BBA:
 
 ```bash
 python3.10 -m venv .venv
-```
-
-Install BBA:
-
-```bash
 .venv/bin/pip install -e .
 ```
 
-Confirm the installed ADK version:
+Confirm the ADK version:
 
 ```bash
 .venv/bin/python -c "import google.adk; print(google.adk.__version__)"
@@ -63,41 +65,31 @@ Run all tests:
 
 ## 4. Prepare Google Cloud
 
-Select the project:
+Select the project and enable Vertex AI:
 
 ```bash
 gcloud config set project PROJECT_ID
-```
-
-Enable the Vertex AI API:
-
-```bash
 gcloud services enable aiplatform.googleapis.com
 ```
 
-The person who enables the API needs `roles/serviceusage.serviceUsageAdmin` or an equivalent custom role.
+Give the local operator `roles/aiplatform.user` or a narrower custom role.
+Open each selected model card in Model Garden.
+Accept the model terms when Google Cloud requests this action.
 
-Give the BBA operator or service account `roles/aiplatform.user`.
-Use a narrower custom role if your organization requires one.
-
-Open each partner model card in Model Garden.
-Accept the model terms if Google Cloud asks for acceptance.
-Confirm that the card shows `Serverless`.
+The model card must show `Serverless`.
 Do not select a card that shows `Self-deployed`.
+Model availability, quota, price, and terms can change.
+Check each card before each epoch.
 
-An organization policy can deny a Model Garden model.
-Check the policy if a permitted model request fails.
-See [Control access to Model Garden models](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/control-model-access).
+## 5. Authenticate the local process
 
-## 5. Authenticate
-
-For local development, create Application Default Credentials:
+Create local Application Default Credentials:
 
 ```bash
 gcloud auth application-default login
 ```
 
-Set the runtime environment:
+Set the required environment values:
 
 ```bash
 export GOOGLE_CLOUD_PROJECT="PROJECT_ID"
@@ -105,68 +97,30 @@ export GOOGLE_CLOUD_LOCATION="global"
 export GOOGLE_GENAI_USE_ENTERPRISE="TRUE"
 ```
 
-For a hosted controller, use a service account.
-Do not put a credential file in a candidate workspace.
-Do not put a credential in the controller image.
+Do not put a credential file in the evidence root or a candidate workspace.
+Generated code cannot read the local credentials.
 
-## 6. Select serverless models
+## 6. Check the local sandbox
 
-Select at least four configurations from at least three model families.
-Confirm that each model supports function calls and token-use metadata.
-
-The pilot template uses these Model Garden entries:
-
-| Publisher | Model card | BBA model value | Family |
-| --- | --- | --- | --- |
-| Google | Gemini 3.6 Flash | `gemini-3.6-flash` | `gemini` |
-| Google | Gemini 3.5 Flash Lite | `gemini-3.5-flash-lite` | `gemini` |
-| Anthropic | Claude Sonnet 5 | `claude-sonnet-5@default` | `claude` |
-| xAI | Grok 4.3 | `xai/grok-4.3` | `grok` |
-
-Model availability, price, quota, and terms can change.
-Check all four cards before each epoch.
-
-BBA sends Google and Anthropic model IDs through the native ADK registry.
-BBA sends other Model Garden serverless IDs through the ADK `LiteLlm` connector and the `vertex_ai/` route.
-
-## 7. Prepare the sandbox
-
-### Local macOS sandbox
-
-BBA uses Seatbelt for local development on macOS.
-Check the boundary:
+Run this command:
 
 ```bash
-.venv/bin/python -m bba.cli sandbox-status
+.venv/bin/bba sandbox-status
 ```
 
-The output must show `macos-seatbelt` and `available: true`.
-Set `sandbox.backend` to `macos-seatbelt` in the manifest.
+On macOS, the result must show `macos-seatbelt` and `available: true`.
+Set `sandbox.backend` in the manifest to the reported backend.
+BBA stops before inference if the required sandbox is not available.
 
-### Cloud Run sandbox
+The sandbox has no network access.
+The sandbox cannot read controller credentials, other candidates, or holdout files.
 
-Use the Cloud Run sandbox launcher for a hosted worker.
-Enable the launcher on the service:
+## 7. Prepare the manifest
 
-```bash
-gcloud beta run services update SERVICE \
-  --region REGION \
-  --sandbox-launcher
-```
-
-The sandbox launcher is a Preview feature.
-Its interface can change.
-
-Set `sandbox.backend` to `gcp-cloud-run` in the manifest.
-Use one active epoch worker on each service instance.
-Do not put credentials, holdout data, or other candidates in the worker file system.
-
-## 8. Prepare the manifest
-
-Copy the template:
+Copy the example:
 
 ```bash
-cp examples/serverless-pilot-manifest.json /secure/path/epoch-manifest.json
+cp examples/serverless-pilot-manifest.json epoch-manifest.json
 ```
 
 Change these values:
@@ -174,31 +128,32 @@ Change these values:
 - `epoch_id`
 - `gcp_project`
 - `public_seed`
-- Each model ID and reasoning level
-- All resource limits
-- All decision limits
-- The evaluator version
-- The sandbox backend
+- Model IDs, families, and reasoning levels
+- Resource limits
+- Decision limits
+- Evaluator version
+- Sandbox backend
 - All hidden commitments
 
-Do not change the protocol version for a normal version 1 epoch.
+Select at least four model configurations from at least three model families.
+Use only serverless Vertex AI model IDs.
 
-The template prompt digests match the instructions in BBA 0.4.
-Calculate the digests again if you change an instruction.
+The example contains zero-value hidden commitments.
+The `epoch create` command rejects these values.
 
-## 9. Prepare hidden commitments
+## 8. Prepare hidden commitments
 
-The audit authority must prepare these objects before the public run:
+The audit authority must prepare these objects before epoch creation:
 
 - Hidden solver panel
 - Hidden seeds
 - Audit policy
 
-Keep the objects outside the controller worker.
-Give the controller only the SHA-256 commitment for each object.
+Keep the objects in a local protected directory that is outside the evidence root.
+Do not give these objects to the creator process.
+Put only their SHA-256 commitments in the manifest.
 
-BBA calculates a commitment from canonical JSON.
-Use this Python example in the secure audit environment:
+Calculate each commitment from canonical JSON:
 
 ```python
 from bba.protocol import digest_json
@@ -213,174 +168,199 @@ for name, value in hidden_material.items():
     print(name, digest_json(value))
 ```
 
-Replace all placeholder commitments in the template.
-Do not publish `hidden_material` before public closure.
+Do not reveal `hidden_material` before public closure.
 
-## 10. Load the manifest in Python
+## 9. Create the local epoch
 
-The package does not contain a JSON manifest loader.
-Use this code in the long-lived epoch process:
+Use one evidence root for all local BBA data.
+The default root is `.bba`.
 
-```python
-import json
-from pathlib import Path
-
-from bba.protocol import (
-    DecisionThresholds,
-    ExperimentManifest,
-    ModelIdentity,
-    ResourceBudget,
-    SandboxCapabilities,
-)
-
-path = Path("/secure/path/epoch-manifest.json")
-data = json.loads(path.read_text(encoding="utf-8"))
-
-if any(value == "0" * 64 for value in data["hidden_commitments"].values()):
-    raise ValueError("replace all example hidden commitments")
-
-data["cohort"] = tuple(
-    ModelIdentity(
-        **{
-            **item,
-            "tools": tuple(item.get("tools", ())),
-        }
-    )
-    for item in data["cohort"]
-)
-data["thresholds"] = DecisionThresholds(**data["thresholds"])
-data["budget"] = ResourceBudget(**data["budget"])
-data["sandbox"] = SandboxCapabilities(**data["sandbox"])
-manifest = ExperimentManifest(**data)
+```bash
+.venv/bin/bba epoch create \
+  --manifest epoch-manifest.json \
+  --evidence-root .bba
 ```
 
-The loader rejects the example commitment values.
-Replace them before you start the process.
+This command validates and freezes the manifest.
+It also creates the local SQLite state file.
+You cannot change the manifest after this command.
 
-## 11. Run a public epoch with the Python API
+## 10. Run or resume the public tournament
 
-Use one long-lived Python process.
-Do not stop the process until the holdout audit is complete.
+Run this command:
 
-```python
-from pathlib import Path
-
-from bba.adk_runtime import build_adk_backends
-from bba.evidence import EvidenceStore
-from bba.runtime import SecureSandbox
-from bba.tournament import TournamentController
-from bba.validator import PackageValidator
-
-sandbox = SecureSandbox()
-creators, solvers = build_adk_backends(
-    manifest,
-    construction_sandbox=sandbox,
-)
-
-controller = TournamentController(
-    manifest=manifest,
-    evidence=EvidenceStore(Path("/secure/evidence")),
-    validator=PackageValidator(
-        sandbox,
-        sample_count=manifest.thresholds.sample_count,
-    ),
-    creator_backends=creators,
-    solver_backends=solvers,
-)
-
-controller.run_public_epoch()
+```bash
+.venv/bin/bba epoch run \
+  --epoch-id EPOCH_ID \
+  --evidence-root .bba
 ```
 
-This call runs three rounds.
-It validates each snapshot before it starts solver cells.
-It writes immutable evidence during the run.
+The command does this work:
 
-Monitor model quotas and billed token use in Google Cloud.
-Stop the process if evidence publication fails.
-Do not delete a partial evidence directory.
+1. It locks the local epoch.
+2. It restores complete evidence.
+3. It resets a work item that a prior process interrupted.
+4. It runs unfinished creator work through Vertex AI.
+5. It validates each new snapshot in the local sandbox.
+6. It runs unfinished solver cells through Vertex AI.
+7. It saves each result before it starts the next work item.
+
+You can stop the process between work items.
+If the process stops during one item, BBA starts that item again.
+Run the same command to resume.
+
+Do not start two `epoch run` processes for one epoch.
+The local lock rejects the second process.
+
+## 11. Inspect progress
+
+Show the phase and work counts:
+
+```bash
+.venv/bin/bba epoch status \
+  --epoch-id EPOCH_ID \
+  --evidence-root .bba
+```
+
+Show all snapshots:
+
+```bash
+.venv/bin/bba epoch candidates \
+  --epoch-id EPOCH_ID \
+  --evidence-root .bba
+```
+
+The public run is complete when the phase is `awaiting_review`.
+A failed work item appears in `failed_work`.
+Correct the local or provider fault and run `epoch run` again.
 
 ## 12. Record human reviews
 
-Review final-round candidates after the public run.
-For each candidate, get the six selected item IDs:
+Review only final-round snapshots.
+Get the controller-selected item IDs:
 
-```python
-selected_ids = controller.select_review_items(snapshot)
+```bash
+.venv/bin/bba epoch review-items \
+  --epoch-id EPOCH_ID \
+  --snapshot-id SNAPSHOT_ID \
+  --evidence-root .bba
 ```
 
-Give the reviewer only the public solver bundle and the selected IDs.
-The reviewer must reconstruct each answer.
+The reviewer uses only the candidate's `solver_bundle` directory.
+The reviewer reconstructs all six answers.
+Save the answers as one JSON object:
 
-Store the signing key in a secret manager or another approved secret store.
-Do not write the key to the evidence directory.
-
-Record the decision:
-
-```python
-from bba.protocol import PromotionDecision
-
-controller.record_human_review(
-    snapshot=snapshot,
-    reviewer_id="REVIEWER_ID",
-    reconstructed_answers=reviewer_answers,
-    decision=PromotionDecision.APPROVED,
-    limitations=("REVIEWER_LIMITATION",),
-    key_id="REVIEWER_KEY_ID",
-    signing_key=reviewer_signing_key,
-)
+```json
+{
+  "ITEM_ID_1": "ANSWER_1",
+  "ITEM_ID_2": "ANSWER_2"
+}
 ```
 
-Do not approve a candidate if the reviewer cannot reconstruct all six answers.
+The real file must contain all six selected IDs.
+Keep the signing-key file outside the evidence root.
 
-## 13. Freeze and close the public epoch
+Record the review:
 
-Prepare the public evaluator scores and controlled damage pairs.
-Freeze them before you reveal hidden evidence:
-
-```python
-from bba.audit import DefectPair
-
-controller.freeze_audit_population(
-    public_scores=public_scores,
-    defect_pairs=(
-        DefectPair("BASE_PROFILE", "DAMAGED_PROFILE", "DAMAGE_CATEGORY"),
-    ),
-)
+```bash
+.venv/bin/bba epoch record-review \
+  --epoch-id EPOCH_ID \
+  --snapshot-id SNAPSHOT_ID \
+  --reviewer-id REVIEWER_ID \
+  --answers reviewer-answers.json \
+  --decision approved \
+  --limitation "LIMITATION TEXT" \
+  --key-id REVIEWER_KEY_ID \
+  --signing-key-file /protected/path/reviewer.key \
+  --evidence-root .bba
 ```
 
-Close the public epoch:
+An approval fails if one answer is incorrect.
+The command writes a signed epoch record and an append-only registry record.
 
-```python
-public_record = controller.close_public_epoch()
+## 13. Freeze the public audit population
+
+The audit authority prepares the public evaluator profiles before it opens the holdout.
+The score file is a JSON object with normalized values:
+
+```json
+{
+  "base-profile": 0.90,
+  "damaged-profile": 0.20,
+  "public-optimizer": 0.99
+}
 ```
 
-Confirm that `hidden_evidence_included` is `false`.
-Do not reveal the holdout before this record exists.
+The defect-pair file is a JSON array:
 
-## 14. Run the holdout audit
+```json
+[
+  {
+    "base_id": "base-profile",
+    "damaged_id": "damaged-profile",
+    "category": "controlled_damage"
+  }
+]
+```
+
+Freeze these public values:
+
+```bash
+.venv/bin/bba epoch freeze-audit \
+  --epoch-id EPOCH_ID \
+  --public-scores public-scores.json \
+  --defect-pairs defect-pairs.json \
+  --evidence-root .bba
+```
+
+Do not reveal the holdout before this command and public closure are complete.
+
+## 14. Close the public epoch
+
+Run this command:
+
+```bash
+.venv/bin/bba epoch close \
+  --epoch-id EPOCH_ID \
+  --evidence-root .bba
+```
+
+The command writes the matrix, candidate status, creator ranks, solver ranks, and adaptation values.
+It does not include hidden evidence.
+The phase becomes `public_closed`.
+
+## 15. Run the sealed audit
 
 The audit authority now releases the committed material.
-The released objects must match the prior commitments.
+The released JSON object must match all manifest commitments.
+
+Prepare two JSON score objects:
+
+- The composite holdout scores
+- The hidden-only holdout scores
 
 Run the audit:
 
-```python
-audit_record = controller.run_holdout_audit(
-    composite_holdout=composite_scores,
-    hidden_only_holdout=hidden_only_scores,
-    revealed_material=hidden_material,
-)
+```bash
+.venv/bin/bba epoch audit \
+  --epoch-id EPOCH_ID \
+  --composite-holdout composite-holdout.json \
+  --hidden-only-holdout hidden-only-holdout.json \
+  --revealed-material revealed-material.json \
+  --evidence-root .bba
 ```
 
 Check the audit status and every component value.
 Do not use only the combined BBB value.
-Retire the revealed holdout after this call.
+Retire the revealed holdout after this command.
 
-## 15. Inspect the output
+## 16. Local files
 
 The evidence root has this layout:
 
 ```text
+bba-state.sqlite3
+locks/
 epochs/
   EPOCH_ID/
     manifest.json
@@ -388,6 +368,7 @@ epochs/
     validations/
     solver-cells/
     agent-traces/
+    promotions/
     evaluation/
     audit/
     state/
@@ -395,50 +376,35 @@ registries/
   canonical-benchmarks/
 ```
 
-Do not edit an evidence file.
-A repeated write to an immutable path must fail.
+Do not edit an evidence file or the SQLite file.
+Do not put holdout material or signing keys in this directory.
+Back up the complete directory after each public run and after each audit.
 
-## 16. Failure response
+## 17. Failure response
 
 Use these rules after a failure:
 
 - Keep all published evidence.
-- Record the model, candidate, round, and cell state.
-- Do not convert a provider error or timeout to a zero score.
-- Do not rank a candidate with an incomplete solver panel.
-- Do not reuse an epoch ID after a partial run.
-- Start a new epoch with a new ID after you correct the cause.
-- Do not reveal hidden evidence for an incomplete public epoch.
+- Inspect `epoch status`.
+- Correct the local or provider fault.
+- Run the same command again.
+- Do not convert a timeout or provider error to a zero score.
+- Do not close an epoch with an incomplete solver panel.
+- Do not reveal hidden evidence before public closure.
+- Do not reuse revealed holdout material in another epoch.
 
-## 17. Cost controls
+## 18. Cost controls
 
-BBA uses serverless model requests only.
+BBA uses serverless model inference.
 It has no persistent model-serving charge.
 
 Use these controls:
 
 - Set a Google Cloud budget and alerts.
 - Set model quotas before the epoch.
-- Use the pilot resource limits before you use the default limits.
-- Check token-use traces after the pilot.
-- Estimate the full epoch from measured input and output tokens.
-- Keep three repetitions for a conforming public epoch.
+- Start with the pilot token and call limits.
+- Check local agent traces after the pilot.
+- Estimate the full epoch from measured token use.
+- Keep three solver repetitions for a conforming version 1 epoch.
 
-The pilot template limits each invocation to 8,000 total tokens and 16 model calls.
-The limit is not a price guarantee.
-Each provider has separate input and output prices.
-
-## 18. Production readiness check
-
-Do not call the present controller restart-safe.
-Production operation still needs these features:
-
-- A versioned JSON manifest loader
-- A restart-safe epoch state loader
-- A `run-epoch` command
-- Separate review, closure, and audit commands
-- Idempotent retry controls
-- Tested Cloud Run deployment files
-
-The deterministic test proves the protocol flow.
-It does not prove production recovery.
+Local storage, local CPU work, and local backup have no Vertex AI inference charge.

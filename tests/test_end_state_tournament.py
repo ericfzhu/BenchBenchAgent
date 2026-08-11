@@ -2,12 +2,14 @@
 
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from bba.audit import DefectPair
 from bba.evidence import EvidenceStore
 from bba.protocol import (
     AuditStatus,
+    DecisionThresholds,
     ExperimentManifest,
     ModelIdentity,
     PromotionDecision,
@@ -100,11 +102,26 @@ class TestEndStateTournament(unittest.TestCase):
                 signing_key=b"test-only-reviewer-secret",
             )
             self.assertTrue(signed.signature)
+            repeated = self.controller.record_human_review(
+                snapshot,
+                reviewer_id="independent-reviewer",
+                reconstructed_answers={item_id: gold[item_id] for item_id in selected},
+                decision=PromotionDecision.APPROVED,
+                limitations=("Synthetic conformance fixture",),
+                key_id="reviewer-key-1",
+                signing_key=b"test-only-reviewer-secret",
+            )
+            self.assertEqual(repeated, signed)
 
         public_scores = {"good": 0.90, "okay": 0.70, "optimizer": 0.99, "damaged": 0.20}
         defect_pairs = [DefectPair("good", "damaged", "controlled_damage")]
-        self.controller.freeze_audit_population(public_scores, defect_pairs)
+        population = self.controller.freeze_audit_population(public_scores, defect_pairs)
+        self.assertEqual(
+            self.controller.freeze_audit_population(public_scores, defect_pairs),
+            population,
+        )
         public = self.controller.close_public_epoch()
+        self.assertEqual(self.controller.close_public_epoch(), public)
         statuses = public["candidate_statuses"]
         final_statuses = [statuses[snapshot.snapshot_id] for snapshot in final_snapshots]
         self.assertEqual(final_statuses.count("active"), 3)
@@ -126,6 +143,63 @@ class TestEndStateTournament(unittest.TestCase):
         self.assertEqual(audit["status"], AuditStatus.UNVALIDATED.value)
         self.assertIn("pairwise_within_public_top_quartile", audit["targets"]["hidden_only"])
         self.assertTrue(audit["holdout_retired"])
+        self.assertEqual(
+            self.controller.run_holdout_audit(composite, hidden, self.hidden_material),
+            audit,
+        )
+
+    def test_public_epoch_resumes_after_an_interrupted_creator(self):
+        class InterruptOnce:
+            def __init__(self, delegate):
+                self.delegate = delegate
+                self.interrupted = False
+
+            def build(self, *args, **kwargs):
+                if not self.interrupted:
+                    self.interrupted = True
+                    raise KeyboardInterrupt("simulated local process stop")
+                return self.delegate.build(*args, **kwargs)
+
+        manifest = replace(
+            self.manifest,
+            epoch_id="resume-fixture-epoch",
+            thresholds=DecisionThresholds(sample_count=6, solver_repetitions=1),
+        )
+        creators = {
+            identity.artifact_id: ExecutableCreatorFixture(0.25)
+            for identity in self.cohort
+        }
+        first_identity = self.cohort[0].artifact_id
+        creators[first_identity] = InterruptOnce(creators[first_identity])
+        solvers = {
+            identity.artifact_id: CalibratedSolverFixture(0.55)
+            for identity in self.cohort
+        }
+        evidence = EvidenceStore(self.root)
+        validator = PackageValidator(
+            LocalFixtureSandbox(acknowledge_unsafe=True), sample_count=6
+        )
+        interrupted = TournamentController(
+            manifest, evidence, validator, creators, solvers
+        )
+        with self.assertRaises(KeyboardInterrupt):
+            interrupted.run_public_epoch()
+        self.assertEqual(
+            interrupted.epoch_status()["work_counts"].get("running"), 1
+        )
+
+        resumed = TournamentController(
+            manifest, evidence, validator, creators, solvers
+        )
+        self.assertEqual(resumed.state.recover_interrupted(manifest.epoch_id), 1)
+        resumed.run_public_epoch()
+        self.assertEqual(len(resumed.snapshots), 12)
+        self.assertEqual(sum(len(items) for items in resumed.cells.values()), 48)
+        self.assertEqual(resumed.epoch_status()["phase"], "awaiting_review")
+
+        restored = TournamentController(manifest, evidence)
+        self.assertEqual(len(restored.snapshots), 12)
+        self.assertEqual(restored.epoch_status()["work_counts"], {"succeeded": 72})
 
 
 if __name__ == "__main__":

@@ -24,7 +24,6 @@ from bba.protocol import (
     PromotionRecord,
     ScoreSummary,
     SolverCell,
-    candidate_snapshot_from_mapping,
     canonical_json,
     digest_json,
     promotion_record_from_mapping,
@@ -180,22 +179,22 @@ class TournamentController:
         self.snapshots = self._ordered_snapshots(
             self.evidence.load_snapshots(self.manifest.epoch_id)
         )
-        snapshot_by_digest = {}
         snapshot_keys = set()
+        snapshot_by_id = {item.snapshot_id: item for item in self.snapshots}
         for snapshot in self.snapshots:
             key = (snapshot.creator.artifact_id, snapshot.round_index)
             if key in snapshot_keys:
                 raise ValueError(f"multiple snapshots exist for creator round: {key}")
             snapshot_keys.add(key)
-            snapshot_by_digest[snapshot.package_digest] = snapshot
-            parent = next(
-                (
-                    item
-                    for item in self.snapshots
-                    if item.snapshot_id == snapshot.parent_snapshot_id
-                ),
-                None,
-            )
+            parent = snapshot_by_id.get(snapshot.parent_snapshot_id)
+            if snapshot.round_index == 0 and snapshot.parent_snapshot_id is not None:
+                raise ValueError("round-zero snapshot cannot have a parent")
+            if snapshot.round_index > 0 and (
+                parent is None
+                or parent.creator != snapshot.creator
+                or parent.round_index != snapshot.round_index - 1
+            ):
+                raise ValueError(f"candidate revision chain is invalid: {snapshot.snapshot_id}")
             payload = self._creator_payload(snapshot.creator, snapshot.round_index, parent)
             metadata_path = (
                 self.evidence.epoch_root(self.manifest.epoch_id)
@@ -236,12 +235,21 @@ class TournamentController:
         cell_root = self.evidence.epoch_root(self.manifest.epoch_id) / "solver-cells"
         for path in sorted(cell_root.glob("*.json")):
             cell = solver_cell_from_mapping(read_json(path))
-            snapshot = snapshot_by_digest.get(cell.candidate_digest)
-            if snapshot is None:
-                raise ValueError(f"solver cell has no candidate snapshot: {path.name}")
-            expected_name = f"{self._cell_record_id(snapshot, cell.solver, cell.repetition)}.json"
-            if path.name != expected_name:
+            matches = [
+                snapshot
+                for snapshot in self.snapshots
+                if snapshot.package_digest == cell.candidate_digest
+                and path.name
+                == f"{self._cell_record_id(snapshot, cell.solver, cell.repetition)}.json"
+            ]
+            if len(matches) != 1:
                 raise ValueError(f"solver cell path does not match its identity: {path.name}")
+            snapshot = matches[0]
+            expected_invocation = digest_json(
+                self._solver_payload(snapshot, cell.solver, cell.repetition)
+            )
+            if cell.invocation_digest != expected_invocation:
+                raise ValueError(f"solver cell invocation digest is invalid: {path.name}")
             self.cells.setdefault(snapshot.snapshot_id, []).append(cell)
             self.state.reconcile_success(
                 self.manifest.epoch_id,
@@ -493,16 +501,6 @@ class TournamentController:
             (snapshot.creator.artifact_id, snapshot.round_index): snapshot
             for snapshot in self.snapshots
         }
-        parents: Dict[str, CandidateSnapshot] = {
-            snapshot.creator.artifact_id: snapshot
-            for snapshot in self.snapshots
-            if snapshot.round_index
-            == max(
-                item.round_index
-                for item in self.snapshots
-                if item.creator.artifact_id == snapshot.creator.artifact_id
-            )
-        }
         feedback: Dict[str, Mapping[str, Any]] = {identity.artifact_id: {} for identity in self.manifest.cohort}
         for round_index in range(self.manifest.thresholds.rounds):
             for creator in self.manifest.cohort:
@@ -565,7 +563,6 @@ class TournamentController:
                     self.snapshots.append(snapshot)
                     self.snapshots = self._ordered_snapshots(self.snapshots)
                     snapshot_by_key[(creator.artifact_id, round_index)] = snapshot
-                parents[creator.artifact_id] = snapshot
                 validation = self.validations.get(snapshot.snapshot_id)
                 if validation is None:
                     validation_work_id = self._validation_work_id(snapshot)
@@ -580,11 +577,17 @@ class TournamentController:
                             "validation work is complete but evidence is missing: "
                             + validation_work_id
                         )
-                    validation = self.validator.validate(
-                        Path(snapshot.package_path),
-                        snapshot.package_digest,
-                        self.manifest.public_seed,
-                    )
+                    try:
+                        validation = self.validator.validate(
+                            Path(snapshot.package_path),
+                            snapshot.package_digest,
+                            self.manifest.public_seed,
+                        )
+                    except Exception as exc:
+                        self.state.fail(
+                            self.manifest.epoch_id, validation_work_id, str(exc)
+                        )
+                        raise
                     validation_path = self.evidence.publish_record_idempotent(
                         self.manifest.epoch_id,
                         "validations",
@@ -625,7 +628,6 @@ class TournamentController:
                                     + solver_work_id
                                 )
                             cell = self._run_solver_cell(snapshot, solver, repetition)
-                            cells.append(cell)
                             cell_path = self.evidence.publish_record_idempotent(
                                 self.manifest.epoch_id,
                                 "solver-cells",
@@ -638,6 +640,7 @@ class TournamentController:
                                 self._evidence_ref(cell_path),
                                 file_digest(cell_path),
                             )
+                            cells.append(cell)
                             existing_cells[cell_key] = cell
                 feedback[creator.artifact_id] = self._feedback(snapshot)
             self.evidence.publish_record_idempotent(
@@ -675,9 +678,49 @@ class TournamentController:
         key_id: str,
         signing_key: bytes,
     ) -> PromotionRecord:
+        if not self._public_run_is_complete():
+            raise RuntimeError("human review requires a complete public run")
+        if snapshot.round_index != self.manifest.thresholds.rounds - 1:
+            raise ValueError("canonical review is limited to final-round snapshots")
         expected_ids = self.select_review_items(snapshot)
         if set(reconstructed_answers) != set(expected_ids):
             raise ValueError("review must reconstruct the controller-selected six-item sample")
+        reconstructed_digest = hashlib.sha256(
+            canonical_json(dict(reconstructed_answers))
+        ).hexdigest()
+        registry = PromotionRegistry(self.evidence)
+        existing = self.promotions.get(snapshot.package_digest)
+        if existing is not None:
+            if not registry.verify(existing, signing_key):
+                raise ValueError("the signing key does not verify the existing review")
+            requested_fields = (
+                reviewer_id,
+                decision,
+                reconstructed_digest,
+                tuple(limitations),
+                key_id,
+            )
+            existing_fields = (
+                existing.reviewer_id,
+                existing.decision,
+                existing.reconstructed_answers_digest,
+                existing.limitations,
+                existing.key_id,
+            )
+            if (
+                requested_fields != existing_fields
+                or existing.sampled_item_ids != tuple(expected_ids)
+            ):
+                raise ValueError("a different review already exists for this candidate")
+            self.evidence.publish_record_idempotent(
+                self.manifest.epoch_id,
+                "promotions",
+                snapshot.package_digest,
+                existing,
+            )
+            registry.append(existing, signing_key)
+            self.promotions[snapshot.package_digest] = existing
+            return existing
         gold = read_jsonl_strict(Path(snapshot.package_path) / "gold_private_sample.jsonl")
         gold_map = {row["id"]: row["answer"] for row in gold}
         all_correct = all(
@@ -699,14 +742,20 @@ class TournamentController:
             reviewer_id=reviewer_id,
             decision=decision,
             sampled_item_ids=tuple(expected_ids),
-            reconstructed_answers_digest=hashlib.sha256(canonical_json(dict(reconstructed_answers))).hexdigest(),
+            reconstructed_answers_digest=reconstructed_digest,
             evidence_digests=evidence_digests,
             limitations=tuple(limitations),
             timestamp=datetime.now(timezone.utc).isoformat(),
             key_id=key_id,
         )
-        signed = PromotionRegistry.sign(record, signing_key)
-        PromotionRegistry(self.evidence).append(signed, signing_key)
+        signed = registry.sign(record, signing_key)
+        self.evidence.publish_record_idempotent(
+            self.manifest.epoch_id,
+            "promotions",
+            snapshot.package_digest,
+            signed,
+        )
+        registry.append(signed, signing_key)
         self.promotions[snapshot.package_digest] = signed
         return signed
 
@@ -726,7 +775,22 @@ class TournamentController:
 
     def close_public_epoch(self) -> Dict[str, Any]:
         if self._public_closed:
-            raise RuntimeError("public epoch is already closed")
+            record = self.evidence.read_record(
+                self.manifest.epoch_id, "evaluation", "public"
+            )
+            self.evidence.publish_record_idempotent(
+                self.manifest.epoch_id,
+                "state",
+                "public-closed",
+                {
+                    "manifest_digest": self.manifest.digest,
+                    "evaluation_digest": digest_json(record),
+                },
+            )
+            self.state.set_phase(self.manifest.epoch_id, "public_closed")
+            return record
+        if not self._public_run_is_complete():
+            raise RuntimeError("public epoch work is incomplete")
         if self._audit_public_scores is None:
             raise RuntimeError("audit population must be frozen before the public epoch closes")
         evaluations = self._evaluations()
@@ -760,14 +824,17 @@ class TournamentController:
             "hidden_evidence_included": False,
             "closed_at": datetime.now(timezone.utc).isoformat(),
         }
-        self.evidence.publish_record(self.manifest.epoch_id, "evaluation", "public", record)
-        self.evidence.publish_record(
+        self.evidence.publish_record_idempotent(
+            self.manifest.epoch_id, "evaluation", "public", record
+        )
+        self.evidence.publish_record_idempotent(
             self.manifest.epoch_id,
             "state",
             "public-closed",
             {"manifest_digest": self.manifest.digest, "evaluation_digest": digest_json(record)},
         )
         self._public_closed = True
+        self.state.set_phase(self.manifest.epoch_id, "public_closed")
         return record
 
     def freeze_audit_population(
@@ -777,8 +844,10 @@ class TournamentController:
     ) -> Dict[str, Any]:
         """Freeze public evaluator outputs before any holdout is revealed."""
 
-        if self._public_closed or self._audit_public_scores is not None:
-            raise RuntimeError("audit population can be frozen exactly once before public closure")
+        if self._public_closed:
+            raise RuntimeError("audit population must be frozen before public closure")
+        if not self._public_run_is_complete():
+            raise RuntimeError("audit population requires a complete public run")
         if len(public_scores) < 2:
             raise ValueError("audit population requires at least two profiles")
         normalized = {str(key): float(value) for key, value in public_scores.items()}
@@ -794,9 +863,19 @@ class TournamentController:
             "defect_pairs": [to_primitive(pair) for pair in defect_pairs],
             "frozen_before_hidden_reveal": True,
         }
-        self.evidence.publish_record(self.manifest.epoch_id, "audit", "public-population", record)
+        if self._audit_public_scores is not None:
+            existing = self.evidence.read_record(
+                self.manifest.epoch_id, "audit", "public-population"
+            )
+            if canonical_json(existing) != canonical_json(record):
+                raise ValueError("a different audit population is already frozen")
+            return existing
+        self.evidence.publish_record_idempotent(
+            self.manifest.epoch_id, "audit", "public-population", record
+        )
         self._audit_public_scores = normalized
         self._audit_defect_pairs = tuple(defect_pairs)
+        self.state.set_phase(self.manifest.epoch_id, "audit_population_frozen")
         return record
 
     def run_holdout_audit(
@@ -819,5 +898,13 @@ class TournamentController:
             self.manifest.hidden_commitments,
             revealed_material,
         )
-        self.evidence.publish_record(self.manifest.epoch_id, "audit", "holdout", record)
+        if self._holdout_record is not None:
+            if canonical_json(self._holdout_record) != canonical_json(record):
+                raise ValueError("a different holdout audit is already recorded")
+            return self._holdout_record
+        self.evidence.publish_record_idempotent(
+            self.manifest.epoch_id, "audit", "holdout", record
+        )
+        self._holdout_record = record
+        self.state.set_phase(self.manifest.epoch_id, "audited")
         return record
