@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bba"
+version = "0.1.0"
+description = "BenchBenchAgent (BBA): Autonomous Adversarial Benchmark Co-Evolution Framework using ADK 2.0 and Vertex AI"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    { name = "AgentBenchBench Contributors" }
+]
+license = { text = "MIT" }
+dependencies = [
+    "pydantic>=2.0.0",
+]
+
+[project.optional-dependencies]
+adk = [
+    "google-adk>=2.0.0",
+]
+vertex = [
+    "google-genai>=1.0.0",
+]
+all = [
+    "google-adk>=2.0.0",
+    "google-genai>=1.0.0",
+    "pydantic>=2.0.0",
+]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
