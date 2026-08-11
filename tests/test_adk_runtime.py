@@ -20,9 +20,10 @@ from bba.adk_runtime import (
     AdkCreatorBackend,
     AdkSolverBackend,
     resolve_model,
-    validate_gcp_environment,
 )
+from bba.catalog import CATALOG_VERSION, SERVERLESS_COHORT
 from bba.errors import ProviderFailure
+from bba.gcp import configure_gcp_environment
 from bba.protocol import ExperimentManifest, ModelIdentity, ResourceBudget, digest_json
 
 
@@ -76,16 +77,21 @@ def _final(text: str = "complete") -> LlmResponse:
 
 class TestAdkRuntime(unittest.TestCase):
     def setUp(self):
-        self.identity = ModelIdentity("google", "scripted", "family-a")
+        self.identity = ModelIdentity(
+            "google", "scripted", "family-a", "gemini:scripted"
+        )
         cohort = (
             self.identity,
-            ModelIdentity("meta", "meta/b", "family-b"),
-            ModelIdentity("mistral", "mistral/c", "family-c"),
-            ModelIdentity("google", "d", "family-a"),
+            ModelIdentity("meta", "b", "family-b", "litellm:vertex_ai/meta/b"),
+            ModelIdentity(
+                "mistral", "c", "family-c", "litellm:vertex_ai/mistral/c"
+            ),
+            ModelIdentity("google", "d", "family-a", "gemini:d"),
         )
         self.manifest = ExperimentManifest(
             epoch_id="adk-runtime-test",
             cohort=cohort,
+            catalog_version="test-catalog",
             gcp_project="bba-test-project",
             gcp_location="global",
             public_seed=42,
@@ -103,20 +109,32 @@ class TestAdkRuntime(unittest.TestCase):
         self.assertEqual(ADK_VERSION, "2.6.3")
 
     def test_model_resolution_stays_on_google_cloud(self):
-        self.assertEqual(resolve_model(self.identity), "scripted")
-        open_model = resolve_model(ModelIdentity("meta", "meta/llama", "llama"))
+        self.assertEqual(resolve_model(self.identity).model, "scripted")
+        open_model = resolve_model(ModelIdentity(
+            "meta", "llama", "llama", "litellm:vertex_ai/meta/llama"
+        ))
         self.assertEqual(open_model.model, "vertex_ai/meta/llama")
 
+    def test_every_built_in_catalog_route_resolves_in_adk(self):
+        self.assertEqual(CATALOG_VERSION, "gcp-serverless-2026-08-12")
+        for identity in SERVERLESS_COHORT:
+            with self.subTest(model=identity.model):
+                expected = identity.adk_model.split(":", 1)[1]
+                self.assertEqual(resolve_model(identity).model, expected)
+
     def test_gcp_environment_must_match_manifest(self):
-        environment = {
-            "GOOGLE_GENAI_USE_ENTERPRISE": "TRUE",
-            "GOOGLE_CLOUD_PROJECT": self.manifest.gcp_project,
-            "GOOGLE_CLOUD_LOCATION": self.manifest.gcp_location,
-        }
-        validate_gcp_environment(self.manifest, environment)
-        environment["GOOGLE_CLOUD_PROJECT"] = "wrong-project"
-        with self.assertRaises(ValueError):
-            validate_gcp_environment(self.manifest, environment)
+        environment = {}
+        loader = lambda **_kwargs: (object(), self.manifest.gcp_project)
+        configure_gcp_environment(self.manifest, environment, loader)
+        self.assertEqual(environment["GOOGLE_CLOUD_PROJECT"], "bba-test-project")
+        self.assertEqual(environment["GOOGLE_CLOUD_LOCATION"], "global")
+        self.assertEqual(environment["GOOGLE_GENAI_USE_ENTERPRISE"], "TRUE")
+        with self.assertRaises(RuntimeError):
+            configure_gcp_environment(
+                self.manifest,
+                {},
+                lambda **_kwargs: (object(), "wrong-project"),
+            )
 
     def test_creator_uses_adk_tools_and_emits_redacted_trace(self):
         model = ScriptedLlm(model="scripted-creator", responses=[

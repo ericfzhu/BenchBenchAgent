@@ -105,16 +105,38 @@ class EvidenceStore:
         atomic_publish_json(destination, manifest)
         return destination
 
-    def freeze_private_epoch_material(self, epoch_id: str, value: Any) -> Path:
-        """Save sealed controller inputs outside the public evidence tree."""
+    def freeze_epoch_setup(self, manifest: ExperimentManifest, private: Any) -> Path:
+        """Atomically freeze the public manifest and sealed controller inputs."""
 
-        destination = self.epoch_root(epoch_id) / "private" / "holdout-plan.json"
-        if destination.exists():
-            if canonical_json(read_json(destination)) != canonical_json(value):
-                raise ValueError("private epoch material conflicts with frozen material")
-            return destination
-        atomic_publish_json(destination, value)
-        return destination
+        final_root = self.epoch_root(manifest.epoch_id)
+        manifest_path = final_root / "manifest.json"
+        private_path = final_root / "private" / "holdout-plan.json"
+        if final_root.exists():
+            if not manifest_path.is_file() or not private_path.is_file():
+                raise RuntimeError(f"epoch setup is incomplete: {manifest.epoch_id}")
+            frozen = experiment_manifest_from_mapping(read_json(manifest_path))
+            if frozen.digest != manifest.digest:
+                raise ValueError("frozen epoch manifest conflicts with requested setup")
+            if canonical_json(read_json(private_path)) != canonical_json(private):
+                raise ValueError("private epoch material conflicts with requested setup")
+            return manifest_path
+
+        epochs_root = final_root.parent
+        epochs_root.mkdir(parents=True, exist_ok=True)
+        temporary_root = Path(
+            tempfile.mkdtemp(prefix=".epoch-setup-", dir=str(epochs_root))
+        )
+        try:
+            atomic_publish_json(temporary_root / "manifest.json", manifest)
+            atomic_publish_json(
+                temporary_root / "private" / "holdout-plan.json",
+                private,
+            )
+            os.rename(temporary_root, final_root)
+            return manifest_path
+        finally:
+            if temporary_root.exists():
+                shutil.rmtree(temporary_root)
 
     def load_manifest(self, epoch_id: str) -> ExperimentManifest:
         path = self.epoch_root(epoch_id) / "manifest.json"

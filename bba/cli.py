@@ -10,10 +10,12 @@ from typing import Any, Sequence
 
 from bba.adk_runtime import build_adk_backends
 from bba.audit import DefectPair
+from bba.catalog import catalog_summary
 from bba.evidence import EvidenceStore, read_json, tree_digest
+from bba.epoch_setup import create_experiment_manifest, new_epoch_id
+from bba.gcp import discover_gcp_project
 from bba.protocol import (
     PromotionDecision,
-    experiment_manifest_from_mapping,
     to_primitive,
 )
 from bba.runtime import SecureSandbox
@@ -85,14 +87,19 @@ def _saved_status(
 
 
 def _epoch_create(args: argparse.Namespace) -> int:
-    manifest = experiment_manifest_from_mapping(read_json(Path(args.manifest)))
-    if any(value == "0" * 64 for value in manifest.hidden_commitments.values()):
-        raise ValueError("replace all example hidden commitments before epoch creation")
+    project = discover_gcp_project()
+    epoch_id = args.epoch_id or new_epoch_id()
+    manifest, private = create_experiment_manifest(project, epoch_id=epoch_id)
     evidence = _evidence(args)
     with local_file_lock(evidence.root, f"epoch-{manifest.epoch_id}"):
-        evidence.freeze_manifest(manifest)
+        evidence.freeze_epoch_setup(manifest, private)
         controller = TournamentController(manifest, evidence, state=_state(evidence))
         _print_json(controller.epoch_status())
+    return 0
+
+
+def _catalog(_args: argparse.Namespace) -> int:
+    _print_json(catalog_summary())
     return 0
 
 
@@ -261,8 +268,14 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
     epoch = commands.add_parser("epoch", help="operate a restart-safe local epoch")
     epoch_commands = epoch.add_subparsers(dest="epoch_command", required=True)
 
-    create = epoch_commands.add_parser("create", help="freeze a new epoch manifest")
-    create.add_argument("--manifest", required=True)
+    create = epoch_commands.add_parser(
+        "create",
+        help="create an epoch from BBA's built-in GCP serverless catalog",
+    )
+    create.add_argument(
+        "--epoch-id",
+        help="optional local epoch ID; BBA creates one when this option is absent",
+    )
     _add_evidence_root(create)
     create.set_defaults(handler=_epoch_create)
 
@@ -343,6 +356,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="report whether an audited OS sandbox is available",
     )
     status.set_defaults(handler=_sandbox_status)
+    catalog = commands.add_parser(
+        "catalog",
+        help="show the BBA-owned GCP serverless model catalog",
+    )
+    catalog.set_defaults(handler=_catalog)
     _build_epoch_parser(commands)
     return parser
 

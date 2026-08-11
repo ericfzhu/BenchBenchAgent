@@ -26,10 +26,12 @@ class TestEndStateTournament(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix="bba-end-state-")
         self.root = Path(self.temporary.name)
         self.cohort = (
-            ModelIdentity("google", "alpha", "family-a"),
-            ModelIdentity("meta", "meta/beta", "family-b"),
-            ModelIdentity("mistral", "mistral/gamma", "family-c"),
-            ModelIdentity("google", "delta", "family-a"),
+            ModelIdentity("google", "alpha", "family-a", "gemini:alpha"),
+            ModelIdentity("meta", "beta", "family-b", "litellm:vertex_ai/meta/beta"),
+            ModelIdentity(
+                "mistral", "gamma", "family-c", "litellm:vertex_ai/mistral/gamma"
+            ),
+            ModelIdentity("google", "delta", "family-a", "gemini:delta"),
         )
         self.hidden_material = {
             "hidden_solver_panel": ["sealed-a", "sealed-b"],
@@ -39,6 +41,7 @@ class TestEndStateTournament(unittest.TestCase):
         self.manifest = ExperimentManifest(
             epoch_id="fixture-epoch",
             cohort=self.cohort,
+            catalog_version="fixture-catalog",
             gcp_project="bba-test-project",
             gcp_location="global",
             public_seed=20260811,

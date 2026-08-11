@@ -7,6 +7,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from bba.audit import DefectPair, audit_evaluator
+from bba.catalog import CATALOG_VERSION, GCP_LOCATION, SERVERLESS_COHORT
 from bba.damage import create_damage_variants
 from bba.evidence import EvidenceStore
 from bba.protocol import (
@@ -28,10 +29,17 @@ from bba.validator import PackageValidator
 
 def cohort():
     return (
-        ModelIdentity("google", "creator-a", "family-a"),
-        ModelIdentity("meta", "meta/creator-b", "family-b"),
-        ModelIdentity("mistral", "mistral/creator-c", "family-c"),
-        ModelIdentity("google", "creator-d", "family-a"),
+        ModelIdentity("google", "creator-a", "family-a", "gemini:creator-a"),
+        ModelIdentity(
+            "meta", "creator-b", "family-b", "litellm:vertex_ai/meta/creator-b"
+        ),
+        ModelIdentity(
+            "mistral",
+            "creator-c",
+            "family-c",
+            "litellm:vertex_ai/mistral/creator-c",
+        ),
+        ModelIdentity("google", "creator-d", "family-a", "gemini:creator-d"),
     )
 
 
@@ -44,6 +52,7 @@ def manifest(epoch_id="protocol-test"):
     return ExperimentManifest(
         epoch_id=epoch_id,
         cohort=cohort(),
+        catalog_version="fixture-catalog",
         gcp_project="bba-test-project",
         gcp_location="global",
         public_seed=20260811,
@@ -56,33 +65,19 @@ def manifest(epoch_id="protocol-test"):
 
 
 class TestEndStateProtocol(unittest.TestCase):
-    def test_serverless_pilot_manifest_matches_the_public_contract(self):
-        path = Path(__file__).parents[1] / "examples" / "serverless-pilot-manifest.json"
-        data = json.loads(path.read_text(encoding="utf-8"))
-        data["cohort"] = tuple(
-            ModelIdentity(
-                **{
-                    **item,
-                    "tools": tuple(item.get("tools", ())),
-                }
-            )
-            for item in data["cohort"]
-        )
-        data["thresholds"] = DecisionThresholds(**data["thresholds"])
-        data["budget"] = ResourceBudget(**data["budget"])
-        data["sandbox"] = SandboxCapabilities(**data["sandbox"])
-
-        pilot = ExperimentManifest(**data)
-
-        self.assertEqual(len(pilot.cohort), 4)
-        self.assertEqual(len({model.family for model in pilot.cohort}), 3)
-        self.assertTrue(all("/endpoints/" not in model.model for model in pilot.cohort))
+    def test_built_in_catalog_matches_the_public_contract(self):
+        self.assertEqual(CATALOG_VERSION, "gcp-serverless-2026-08-12")
+        self.assertEqual(GCP_LOCATION, "global")
+        self.assertEqual(len(SERVERLESS_COHORT), 12)
+        self.assertEqual(len({model.family for model in SERVERLESS_COHORT}), 3)
+        self.assertTrue(all("/endpoints/" not in model.model for model in SERVERLESS_COHORT))
 
     def test_manifest_requires_four_models_and_three_families(self):
         with self.assertRaises(ValueError):
             ExperimentManifest(
                 epoch_id="bad",
                 cohort=cohort()[:3],
+                catalog_version="fixture-catalog",
                 gcp_project="bba-test-project",
                 gcp_location="global",
                 public_seed=1,
@@ -99,9 +94,15 @@ class TestEndStateProtocol(unittest.TestCase):
                 "meta",
                 "projects/bba-test-project/locations/global/endpoints/123",
                 "family-a",
+                "litellm:vertex_ai/meta/bad",
             )
         with self.assertRaises(ValueError):
-            ModelIdentity("meta", "https://models.example.test/v1", "family-a")
+            ModelIdentity(
+                "meta",
+                "https://models.example.test/v1",
+                "family-a",
+                "litellm:vertex_ai/meta/bad",
+            )
 
     def test_hosted_sandbox_backend_is_rejected(self):
         with self.assertRaises(ValueError):
