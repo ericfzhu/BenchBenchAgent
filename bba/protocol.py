@@ -11,8 +11,8 @@ from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional
 
 
-PROTOCOL_VERSION = "bba.epoch.v1"
-SCHEMA_VERSION = 1
+PROTOCOL_VERSION = "bba.epoch.v2"
+SCHEMA_VERSION = 2
 
 
 class StrEnum(str, Enum):
@@ -58,11 +58,12 @@ class ModelIdentity:
     publisher: str
     model: str
     family: str
+    adk_model: str
     reasoning: str = "default"
     tools: tuple = ()
 
     def __post_init__(self) -> None:
-        for name in ("publisher", "model", "family"):
+        for name in ("publisher", "model", "family", "adk_model"):
             if not getattr(self, name).strip():
                 raise ValueError("model identity fields cannot be blank")
         if re.search(r"(^|/)endpoints(/|$)", self.model) or re.match(
@@ -150,6 +151,7 @@ class SandboxCapabilities:
 class ExperimentManifest:
     epoch_id: str
     cohort: tuple
+    catalog_version: str
     gcp_project: str
     gcp_location: str
     public_seed: int
@@ -166,6 +168,8 @@ class ExperimentManifest:
     def __post_init__(self) -> None:
         if not re.fullmatch(r"[a-zA-Z0-9._-]+", self.epoch_id):
             raise ValueError("epoch_id must be a filesystem-safe identifier")
+        if not re.fullmatch(r"[a-zA-Z0-9._-]+", self.catalog_version):
+            raise ValueError("catalog_version must be a stable identifier")
         if not re.fullmatch(r"[a-z][a-z0-9-]{4,28}[a-z0-9]", self.gcp_project):
             raise ValueError("gcp_project must be a Google Cloud project ID")
         if not re.fullmatch(r"[a-z0-9-]+", self.gcp_location):

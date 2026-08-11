@@ -105,6 +105,17 @@ class EvidenceStore:
         atomic_publish_json(destination, manifest)
         return destination
 
+    def freeze_private_epoch_material(self, epoch_id: str, value: Any) -> Path:
+        """Save sealed controller inputs outside the public evidence tree."""
+
+        destination = self.epoch_root(epoch_id) / "private" / "holdout-plan.json"
+        if destination.exists():
+            if canonical_json(read_json(destination)) != canonical_json(value):
+                raise ValueError("private epoch material conflicts with frozen material")
+            return destination
+        atomic_publish_json(destination, value)
+        return destination
+
     def load_manifest(self, epoch_id: str) -> ExperimentManifest:
         path = self.epoch_root(epoch_id) / "manifest.json"
         if not path.is_file():

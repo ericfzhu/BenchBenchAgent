@@ -11,7 +11,6 @@ import asyncio
 import base64
 import hashlib
 import json
-import os
 import shutil
 import threading
 from dataclasses import dataclass
@@ -25,12 +24,13 @@ from google.adk import Agent, Runner
 from google.adk.agents.run_config import RunConfig
 from google.adk.apps import App
 from google.adk.models import BaseLlm
-from google.adk.models.lite_llm import LiteLlm
+from google.adk.models.registry import LLMRegistry
 from google.adk.plugins import BasePlugin
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from bba.errors import PredictionParseFailure, ProviderFailure, SolverTimedOut
+from bba.gcp import configure_gcp_environment
 from bba.protocol import ExperimentManifest, ModelIdentity, digest_json, to_primitive
 from bba.runtime import SecureSandbox
 
@@ -642,27 +642,9 @@ class AdkSolverBackend(_TraceBackend):
 
 
 def resolve_model(identity: ModelIdentity) -> ModelLike:
-    """Resolve a serverless model through Vertex AI only."""
-    publisher = identity.publisher.lower()
-    if publisher in {"google", "anthropic"}:
-        return identity.model
-    model = identity.model.removeprefix("vertex_ai/")
-    return LiteLlm(model=f"vertex_ai/{model}")
+    """Resolve the exact ADK locator frozen by BBA's internal catalog."""
 
-
-def validate_gcp_environment(
-    manifest: ExperimentManifest,
-    environment: Optional[Mapping[str, str]] = None,
-) -> None:
-    """Reject a runtime that is not configured for the frozen GCP project."""
-    values = environment if environment is not None else os.environ
-    enabled = values.get("GOOGLE_GENAI_USE_ENTERPRISE", "").lower()
-    if enabled != "true":
-        raise ValueError("GOOGLE_GENAI_USE_ENTERPRISE must be TRUE")
-    if values.get("GOOGLE_CLOUD_PROJECT") != manifest.gcp_project:
-        raise ValueError("GOOGLE_CLOUD_PROJECT does not match the epoch manifest")
-    if values.get("GOOGLE_CLOUD_LOCATION") != manifest.gcp_location:
-        raise ValueError("GOOGLE_CLOUD_LOCATION does not match the epoch manifest")
+    return LLMRegistry.new_llm(identity.adk_model)
 
 
 def build_adk_backends(
@@ -673,7 +655,7 @@ def build_adk_backends(
     solver_instruction: str = SOLVER_INSTRUCTION,
 ) -> Tuple[Mapping[str, AdkCreatorBackend], Mapping[str, AdkSolverBackend]]:
     """Build the exact creator and solver backend maps required by a controller."""
-    validate_gcp_environment(manifest)
+    configure_gcp_environment(manifest)
     sandbox = construction_sandbox or SecureSandbox()
     if sandbox.backend != manifest.sandbox.backend:
         raise ValueError("construction sandbox does not match the epoch manifest")
