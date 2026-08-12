@@ -192,7 +192,7 @@ Use small modules with one owner for each evidence rule.
 | Live model proof | Add `bba/preflight.py`; update `bba/catalog.py` and `bba/adk_runtime.py`. |
 | Cost and scheduling | Add `bba/budget.py` and `bba/scheduler.py`. |
 | Operator commands | Update `bba/cli.py` and `docs/operations.md`. |
-| Automated checks | Add focused test modules and `.github/workflows/`. |
+| Automated checks | Add focused test modules that run from the local operator host. |
 
 ## Milestone 4: Isolate dependencies and complete sandbox controls
 
@@ -381,25 +381,24 @@ This milestone closes status items 14 and 15.
 BBA cannot exceed its frozen call and token limits.
 Concurrency changes run time but does not change cell identity, score, rank, or audit result.
 
-## Milestone 9: Add continuous integration
+## Milestone 9: Add local verification
 
-This milestone closes status item 16.
+This milestone provides repeatable checks on the local operator host. BBA does not use GitHub Actions.
 
 ### Implementation
 
-- Add an unprivileged CI workflow for compilation, unit tests, schema tests, replay tests, integration fixtures, and `git diff --check`.
-- Add Ubuntu and macOS jobs for the Bubblewrap and Seatbelt security suites.
-- Add a package-build and clean-install job.
-- Keep credentials out of all normal CI jobs.
-- Add a separate manual paid workflow for live Vertex smoke tests.
-- Use Google Cloud workload identity for the paid job. Do not store a long-lived service-account key.
-- Save test reports and redacted smoke evidence as workflow artifacts.
+- Provide local commands for compilation, unit tests, schema tests, replay tests, integration fixtures, and `git diff --check`.
+- Run the Bubblewrap security suite on the target Ubuntu host.
+- Run the Seatbelt security suite only when macOS support needs verification.
+- Provide local package-build and clean-install checks.
+- Keep Google Cloud credentials out of test output and saved evidence.
+- Run paid Vertex preflight from the local operator host.
 
 ### Verification
 
-- Open a test change that breaks compilation, schema validation, replay, sandbox isolation, and formatting. Confirm that each correct job fails.
-- Confirm that normal pull-request jobs cannot access Google Cloud credentials.
-- Confirm that the paid job cannot start without manual approval and the protected environment.
+- Make test changes that break compilation, schema validation, replay, sandbox isolation, and formatting. Confirm that each local check fails.
+- Confirm that local tests do not need Google Cloud credentials.
+- Confirm that paid preflight needs explicit operator action.
 - Confirm that a clean checkout can build, install, and run the local fixture suite.
 
 ### Exit gate
@@ -482,7 +481,7 @@ The release report must list the last passing result for all eight groups.
 | 13. Full production epoch | 10 | Signed production acceptance report |
 | 14. Cost estimate and limit | 8 | Estimate and hard-stop tests |
 | 15. Bounded concurrency | 8 | Sequential and concurrent equivalence test |
-| 16. Continuous integration | 9 | Required CI checks and protected paid job |
+| 16. Local verification | 9 | Repeatable local checks and explicit paid preflight |
 
 ## Commit and review policy
 
