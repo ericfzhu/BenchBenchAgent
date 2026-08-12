@@ -17,10 +17,12 @@ from bba.protocol import (
     EvaluationInstance,
     ExperimentManifest,
     ModelIdentity,
+    SolverAttempt,
     candidate_snapshot_from_mapping,
     canonical_json,
     experiment_manifest_from_mapping,
     evaluation_instance_from_mapping,
+    solver_attempt_from_mapping,
     to_primitive,
 )
 
@@ -171,6 +173,68 @@ class EvidenceStore:
                 raise ValueError(f"evaluation instance digest is invalid: {instance.instance_id}")
             instances.append(dataclasses.replace(instance, instance_path=str(instance_path)))
         return instances
+
+    def load_solver_attempts(self, epoch_id: str) -> list[SolverAttempt]:
+        root = self.epoch_root(epoch_id) / "solver-attempts"
+        attempts = []
+        for metadata_path in sorted(root.glob("*/attempt.json")):
+            if metadata_path.parent.name.startswith("."):
+                continue
+            attempt = solver_attempt_from_mapping(read_json(metadata_path))
+            if metadata_path.parent.name != attempt.attempt_id:
+                raise ValueError(f"solver attempt path has the wrong identity: {metadata_path}")
+            for name, relative in attempt.evidence_files.items():
+                artifact = (self.root / relative).resolve()
+                try:
+                    artifact.relative_to(metadata_path.parent.resolve())
+                except ValueError as exc:
+                    raise ValueError(f"solver attempt artifact escapes its evidence root: {name}") from exc
+                if not artifact.is_file() or file_digest(artifact) != attempt.evidence_digests[name]:
+                    raise ValueError(f"solver attempt artifact digest is invalid: {attempt.attempt_id}/{name}")
+            attempts.append(attempt)
+        return attempts
+
+    def freeze_solver_attempt(
+        self,
+        epoch_id: str,
+        attempt: SolverAttempt,
+        artifacts: Mapping[str, Path],
+    ) -> Path:
+        """Freeze one solver attempt and all replay artifacts as one directory."""
+
+        if set(artifacts) != set(attempt.evidence_files):
+            raise ValueError("solver attempt artifact sources do not match its contract")
+        root = self.epoch_root(epoch_id) / "solver-attempts"
+        final_root = root / attempt.attempt_id
+        metadata_path = final_root / "attempt.json"
+        if final_root.exists():
+            existing = solver_attempt_from_mapping(read_json(metadata_path))
+            if canonical_json(existing) != canonical_json(attempt):
+                raise FileExistsError(f"solver attempt conflicts with evidence: {attempt.attempt_id}")
+            self.load_solver_attempts(epoch_id)
+            return metadata_path
+        root.mkdir(parents=True, exist_ok=True)
+        temporary_root = Path(tempfile.mkdtemp(prefix=".solver-attempt-", dir=str(root)))
+        try:
+            for name, source_value in artifacts.items():
+                source = Path(source_value).resolve()
+                relative = Path(attempt.evidence_files[name])
+                expected = (self.root / relative).resolve()
+                try:
+                    artifact_relative = expected.relative_to(final_root.resolve())
+                except ValueError as exc:
+                    raise ValueError(f"solver attempt artifact path escapes evidence: {name}") from exc
+                destination = temporary_root / artifact_relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+                if file_digest(destination) != attempt.evidence_digests[name]:
+                    raise RuntimeError(f"solver attempt artifact changed while freezing: {name}")
+            atomic_publish_json(temporary_root / "attempt.json", attempt)
+            os.rename(temporary_root, final_root)
+            return metadata_path
+        finally:
+            if temporary_root.exists():
+                shutil.rmtree(temporary_root)
 
     def freeze_candidate(
         self,

@@ -11,8 +11,8 @@ from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional
 
 
-PROTOCOL_VERSION = "bba.epoch.v3"
-SCHEMA_VERSION = 3
+PROTOCOL_VERSION = "bba.epoch.v4"
+SCHEMA_VERSION = 4
 
 
 class StrEnum(str, Enum):
@@ -101,6 +101,22 @@ class ResourceBudget:
 
 
 @dataclass(frozen=True)
+class RetryPolicy:
+    max_attempts: int = 3
+    retryable_states: tuple = (
+        CellState.TIMEOUT.value,
+        CellState.PROVIDER_ERROR.value,
+    )
+
+    def __post_init__(self) -> None:
+        if self.max_attempts < 1:
+            raise ValueError("retry max_attempts must be positive")
+        allowed = {CellState.TIMEOUT.value, CellState.PROVIDER_ERROR.value}
+        if set(self.retryable_states) != allowed:
+            raise ValueError("BBA v4 retries only timeout and provider_error")
+
+
+@dataclass(frozen=True)
 class DecisionThresholds:
     sample_count: int = 30
     rounds: int = 3
@@ -160,11 +176,17 @@ class ExperimentManifest:
     evaluator_version: str
     thresholds: DecisionThresholds = field(default_factory=DecisionThresholds)
     budget: ResourceBudget = field(default_factory=ResourceBudget)
+    retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
     sandbox: SandboxCapabilities = field(default_factory=SandboxCapabilities)
     protocol_version: str = PROTOCOL_VERSION
     schema_version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
+        if self.protocol_version != PROTOCOL_VERSION or self.schema_version != SCHEMA_VERSION:
+            raise ValueError(
+                f"unsupported epoch contract {self.protocol_version} schema {self.schema_version}; "
+                f"expected {PROTOCOL_VERSION} schema {SCHEMA_VERSION}"
+            )
         if not re.fullmatch(r"[a-zA-Z0-9._-]+", self.epoch_id):
             raise ValueError("epoch_id must be a filesystem-safe identifier")
         if not re.fullmatch(r"[a-zA-Z0-9._-]+", self.catalog_version):
@@ -208,6 +230,48 @@ class ScoreSummary:
 
 
 @dataclass(frozen=True)
+class SolverAttempt:
+    attempt_id: str
+    cell_id: str
+    attempt_index: int
+    state: CellState
+    invocation_digest: str
+    started_at: str
+    finished_at: str
+    score: Optional[ScoreSummary] = None
+    prediction_digest: Optional[str] = None
+    per_item: Mapping[str, bool] = field(default_factory=dict)
+    evidence_files: Mapping[str, str] = field(default_factory=dict)
+    evidence_digests: Mapping[str, str] = field(default_factory=dict)
+    error: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.attempt_index < 1:
+            raise ValueError("solver attempt indexes start at one")
+        if not self.attempt_id or not self.cell_id:
+            raise ValueError("solver attempt identity cannot be blank")
+        if set(self.evidence_files) != set(self.evidence_digests):
+            raise ValueError("solver attempt evidence files and digests must match")
+        if self.state == CellState.SUCCESS:
+            required = {
+                "predictions",
+                "candidate_scorer_report",
+                "controller_scorer_report",
+                "command_result",
+            }
+            if self.score is None or not self.prediction_digest:
+                raise ValueError("successful attempts require score and prediction evidence")
+            if not required.issubset(self.evidence_files):
+                raise ValueError("successful attempts require complete replay evidence")
+            if len(self.per_item) != self.score.total:
+                raise ValueError("successful attempts require item-level correctness")
+            if sum(bool(value) for value in self.per_item.values()) != self.score.correct:
+                raise ValueError("attempt item results do not match score")
+        elif self.score is not None or self.prediction_digest is not None or self.per_item:
+            raise ValueError("non-success attempts cannot carry numeric score evidence")
+
+
+@dataclass(frozen=True)
 class SolverCell:
     snapshot_id: str
     instance_digest: str
@@ -215,6 +279,8 @@ class SolverCell:
     repetition: int
     state: CellState
     invocation_digest: str
+    attempt_ids: tuple
+    selected_attempt_id: str
     score: Optional[ScoreSummary] = None
     prediction_digest: Optional[str] = None
     per_item: Mapping[str, bool] = field(default_factory=dict)
@@ -223,6 +289,10 @@ class SolverCell:
     def __post_init__(self) -> None:
         if self.repetition < 0:
             raise ValueError("repetition cannot be negative")
+        if not self.attempt_ids or self.selected_attempt_id not in self.attempt_ids:
+            raise ValueError("solver cells require one selected immutable attempt")
+        if len(set(self.attempt_ids)) != len(self.attempt_ids):
+            raise ValueError("solver cell attempt IDs must be unique")
         if self.state == CellState.SUCCESS:
             if self.score is None or not self.prediction_digest:
                 raise ValueError("successful cells require score and prediction evidence")
@@ -230,8 +300,8 @@ class SolverCell:
                 raise ValueError("successful cells require item-level correctness")
             if sum(bool(value) for value in self.per_item.values()) != self.score.correct:
                 raise ValueError("item-level results do not match score")
-        elif self.score is not None:
-            raise ValueError("non-success cell states cannot carry numeric scores")
+        elif self.score is not None or self.prediction_digest is not None or self.per_item:
+            raise ValueError("non-success cell states cannot carry numeric score evidence")
 
 
 @dataclass(frozen=True)
@@ -330,6 +400,9 @@ def experiment_manifest_from_mapping(value: Mapping[str, Any]) -> ExperimentMani
     data["cohort"] = tuple(model_identity_from_mapping(item) for item in data["cohort"])
     data["thresholds"] = DecisionThresholds(**data.get("thresholds", {}))
     data["budget"] = ResourceBudget(**data.get("budget", {}))
+    retry = dict(data.get("retry_policy", {}))
+    retry["retryable_states"] = tuple(retry.get("retryable_states", RetryPolicy().retryable_states))
+    data["retry_policy"] = RetryPolicy(**retry)
     data["sandbox"] = SandboxCapabilities(**data.get("sandbox", {}))
     return ExperimentManifest(**data)
 
@@ -345,7 +418,15 @@ def solver_cell_from_mapping(value: Mapping[str, Any]) -> SolverCell:
     data["solver"] = model_identity_from_mapping(data["solver"])
     data["state"] = CellState(data["state"])
     data["score"] = score_summary_from_mapping(data.get("score"))
+    data["attempt_ids"] = tuple(data.get("attempt_ids", ()))
     return SolverCell(**data)
+
+
+def solver_attempt_from_mapping(value: Mapping[str, Any]) -> SolverAttempt:
+    data = dict(value)
+    data["state"] = CellState(data["state"])
+    data["score"] = score_summary_from_mapping(data.get("score"))
+    return SolverAttempt(**data)
 
 
 def candidate_snapshot_from_mapping(value: Mapping[str, Any]) -> CandidateSnapshot:

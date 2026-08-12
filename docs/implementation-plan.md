@@ -1,7 +1,7 @@
 # BBA completion plan
 
 This plan closes each gap in the [implementation status](implementation-status.md).
-It applies to BBA version `0.7.0` and protocol `bba.epoch.v3`.
+It started from BBA version `0.7.0` and protocol `bba.epoch.v3`.
 The work will create protocol `bba.epoch.v4` and a new evidence schema.
 BBA will not convert a version 3 epoch to version 4.
 

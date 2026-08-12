@@ -1,6 +1,6 @@
 # BBA protocol specification
 
-This document gives the normative rules for BBA protocol version `bba.epoch.v3`.
+This document gives the normative rules for BBA protocol version `bba.epoch.v4`.
 The word `must` identifies a required rule.
 
 ## 1. Purpose
@@ -66,6 +66,7 @@ The manifest must contain these items:
 - The creator and solver prompt digests
 - The evaluator version
 - The resource limits
+- The retry policy
 - The decision limits
 - The sandbox capabilities
 - The hidden evidence commitments
@@ -264,6 +265,8 @@ Plain solver text is not a submission.
 
 The default protocol uses three repetitions for each cell.
 The controller must store item-level correctness evidence for a successful cell.
+The controller must preserve exact predictions, the candidate scorer report, the controller scorer report, and command diagnostics for each successful attempt.
+An independent process must be able to replay a successful score without a model call.
 
 A cell can have one of these states:
 
@@ -281,6 +284,14 @@ A cell can have one of these states:
 Only `success` can contain a numeric score.
 A failed cell is not a zero score.
 An incomplete solver panel cannot produce a creator rank.
+
+Each cell can contain immutable attempts.
+BBA retries only `timeout` and `provider_error`.
+BBA permits at most three attempts.
+BBA does not retry another state.
+The first successful attempt is the selected attempt.
+If no attempt succeeds, the last allowed attempt is the selected non-score state.
+An attempt cannot overwrite earlier evidence.
 
 ## 10. Candidate status
 
@@ -302,8 +313,10 @@ The controller applies these public status rules:
 BBA must publish a Round 0 creator rank and a final-round creator rank.
 BBA must publish adaptation gain separately.
 
-BBA ranks creator rows by candidate status first.
-The status order is `active`, `frontier_challenge`, `awaiting_review`, `solvability_audit`, `too_easy`, `incomplete`, and `invalid`.
+BBA ranks complete creator rows by candidate status first.
+The ranked status order is `active`, `frontier_challenge`, `awaiting_review`, `solvability_audit`, and `too_easy`.
+An `incomplete` or `invalid` row remains in the matrix and status output.
+Its rank is null.
 
 BBA uses these keys within one status:
 
@@ -397,8 +410,8 @@ The controller must save immutable evidence before it marks the work item comple
 
 The controller must restore complete work from immutable evidence after a restart.
 The controller must not repeat complete inference work.
-The controller must reset an interrupted item and start that item again.
-A failed item can start again after the operator corrects the fault.
+The controller must reset an interrupted item and resume it under the frozen attempt policy.
+A provider or timeout failure can start a new immutable attempt when the policy permits it.
 
 Only one local process can change an epoch at one time.
 The command-line interface must use a local epoch lock.
@@ -414,7 +427,7 @@ An identical retry can use the existing record.
 
 Each candidate snapshot ID must bind the creator, round, and design digest.
 Each evaluation instance must bind the snapshot, design, seed, item count, and instance digest.
-Each solver cell must bind the epoch, snapshot, instance, solver, repetition, and budget.
+Each solver cell must bind the epoch, snapshot, instance, solver, repetition, budget, immutable attempt list, and selected attempt.
 Each registry record must contain the digest of the prior registry record.
 
 An implementation conforms to this protocol only if it passes the deterministic end-to-end test and all security boundary tests.

@@ -20,6 +20,7 @@ from bba.protocol import (
     ResourceBudget,
     SandboxCapabilities,
     ScoreSummary,
+    SolverAttempt,
     SolverCell,
     digest_json,
 )
@@ -116,7 +117,24 @@ class TestEndStateProtocol(unittest.TestCase):
                 repetition=0,
                 state=CellState.TIMEOUT,
                 invocation_digest="invocation",
+                attempt_ids=("attempt-1",),
+                selected_attempt_id="attempt-1",
                 score=ScoreSummary(total=30, correct=0, accuracy=0.0),
+            )
+
+    def test_successful_attempt_requires_complete_replay_evidence(self):
+        with self.assertRaises(ValueError):
+            SolverAttempt(
+                attempt_id="cell--attempt-1",
+                cell_id="cell",
+                attempt_index=1,
+                state=CellState.SUCCESS,
+                invocation_digest="invocation",
+                started_at="start",
+                finished_at="finish",
+                score=ScoreSummary(total=1, correct=1, accuracy=1.0),
+                prediction_digest="digest",
+                per_item={"item": True},
             )
 
     def test_manifest_freeze_is_idempotent_and_conflicts_are_rejected(self):

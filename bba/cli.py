@@ -18,6 +18,7 @@ from bba.protocol import (
     PromotionDecision,
     to_primitive,
 )
+from bba.replay import replay_solver_attempt
 from bba.runtime import SecureSandbox
 from bba.state import LocalStateStore, local_file_lock
 from bba.tournament import TournamentController
@@ -47,6 +48,12 @@ def _sandbox_status(_args: argparse.Namespace) -> int:
         "fail_closed": True,
     })
     return 0 if sandbox.available else 1
+
+
+def _evidence_replay_cell(args: argparse.Namespace) -> int:
+    evidence = _evidence(args)
+    _print_json(replay_solver_attempt(evidence, args.epoch_id, args.attempt_id))
+    return 0
 
 
 def _evidence(args: argparse.Namespace) -> EvidenceStore:
@@ -385,6 +392,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="show the BBA-owned GCP serverless model catalog",
     )
     catalog.set_defaults(handler=_catalog)
+    evidence = commands.add_parser(
+        "evidence", help="verify and replay immutable local evidence"
+    )
+    evidence_commands = evidence.add_subparsers(
+        dest="evidence_command", required=True
+    )
+    replay = evidence_commands.add_parser(
+        "replay-cell", help="replay one successful solver attempt"
+    )
+    _add_epoch_id(replay)
+    replay.add_argument("--attempt-id", required=True)
+    replay.set_defaults(handler=_evidence_replay_cell)
     _build_epoch_parser(commands)
     return parser
 

@@ -168,11 +168,15 @@ def rank_creators(evaluations: Sequence[CandidateEvaluation], round_index: int) 
     rank = 0
     for index, evaluation in enumerate(rows, 1):
         key = (evaluation.status, evaluation.best_solver_median, evaluation.panel_median)
-        if key != previous_key:
+        rankable = evaluation.status not in {
+            CandidateStatus.INCOMPLETE,
+            CandidateStatus.INVALID,
+        }
+        if rankable and key != previous_key:
             rank = index
             previous_key = key
         result.append({
-            "rank": rank,
+            "rank": rank if rankable else None,
             "creator": evaluation.snapshot.creator.artifact_id,
             "snapshot_id": evaluation.snapshot.snapshot_id,
             "round": round_index,
@@ -258,4 +262,3 @@ def matrix(evaluations: Sequence[CandidateEvaluation], cohort: Sequence[ModelIde
         }
         for evaluation in evaluations
     }
-

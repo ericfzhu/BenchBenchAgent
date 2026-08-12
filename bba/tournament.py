@@ -25,6 +25,7 @@ from bba.protocol import (
     PromotionDecision,
     PromotionRecord,
     ScoreSummary,
+    SolverAttempt,
     SolverCell,
     canonical_json,
     digest_json,
@@ -101,6 +102,7 @@ class TournamentController:
         self.round_seeds: Dict[int, int] = {}
         self.validations: Dict[str, Any] = {}
         self.cells: Dict[str, List[SolverCell]] = {}
+        self.attempts: Dict[str, List[SolverAttempt]] = {}
         self.promotions: Dict[str, PromotionRecord] = {}
         self._public_closed = False
         self._audit_public_scores: Optional[Dict[str, float]] = None
@@ -273,6 +275,14 @@ class TournamentController:
                 file_digest(path),
             )
 
+        for attempt in self.evidence.load_solver_attempts(self.manifest.epoch_id):
+            self.attempts.setdefault(attempt.cell_id, []).append(attempt)
+        for cell_id in self.attempts:
+            self.attempts[cell_id].sort(key=lambda item: item.attempt_index)
+            indexes = [item.attempt_index for item in self.attempts[cell_id]]
+            if indexes != list(range(1, len(indexes) + 1)):
+                raise ValueError(f"solver attempt sequence is incomplete: {cell_id}")
+
         cell_root = self.evidence.epoch_root(self.manifest.epoch_id) / "solver-cells"
         for path in sorted(cell_root.glob("*.json")):
             cell = solver_cell_from_mapping(read_json(path))
@@ -292,6 +302,21 @@ class TournamentController:
             )
             if cell.invocation_digest != expected_invocation:
                 raise ValueError(f"solver cell invocation digest is invalid: {path.name}")
+            attempts = self.attempts.get(path.stem, [])
+            if tuple(item.attempt_id for item in attempts) != cell.attempt_ids:
+                raise ValueError(f"solver cell attempts do not match immutable evidence: {path.name}")
+            selected = next(
+                (item for item in attempts if item.attempt_id == cell.selected_attempt_id),
+                None,
+            )
+            if selected is None or (
+                selected.state != cell.state
+                or selected.score != cell.score
+                or selected.prediction_digest != cell.prediction_digest
+                or selected.per_item != cell.per_item
+                or selected.error != cell.error
+            ):
+                raise ValueError(f"solver cell selection is invalid: {path.name}")
             self.cells.setdefault(snapshot.snapshot_id, []).append(cell)
             self.state.reconcile_success(
                 self.manifest.epoch_id,
@@ -425,17 +450,39 @@ class TournamentController:
     def _cell_record_id(self, snapshot: CandidateSnapshot, solver: ModelIdentity, repetition: int) -> str:
         return f"{snapshot.snapshot_id}--{solver.artifact_id}--r{repetition}"
 
-    def _run_solver_cell(
+    def _attempt_paths(self, attempt_id: str) -> Dict[str, str]:
+        base = (
+            self.evidence.epoch_root(self.manifest.epoch_id)
+            / "solver-attempts"
+            / attempt_id
+            / "artifacts"
+        )
+        return {
+            name: (base / filename).relative_to(self.evidence.root).as_posix()
+            for name, filename in {
+                "predictions": "predictions.jsonl",
+                "candidate_scorer_report": "candidate-scorer-report.json",
+                "controller_scorer_report": "controller-scorer-report.json",
+                "command_result": "command-result.json",
+            }.items()
+        }
+
+    def _run_solver_attempt(
         self,
         snapshot: CandidateSnapshot,
         solver: ModelIdentity,
         repetition: int,
-    ) -> SolverCell:
+        attempt_index: int,
+    ) -> SolverAttempt:
         design = Path(snapshot.design_path)
         instance = self.instances[snapshot.snapshot_id]
         instance_root = Path(instance.instance_path)
         invocation = self._solver_payload(snapshot, solver, repetition)
         invocation_digest = digest_json(invocation)
+        cell_id = self._cell_record_id(snapshot, solver, repetition)
+        attempt_id = f"{cell_id}--attempt-{attempt_index}"
+        started_at = datetime.now(timezone.utc).isoformat()
+        artifacts: Dict[str, Path] = {}
         try:
             with tempfile.TemporaryDirectory(prefix="bba-solver-cell-") as temporary:
                 cell_root = Path(temporary)
@@ -454,7 +501,7 @@ class TournamentController:
                     ))
                 finally:
                     self._publish_agent_trace(
-                        self._cell_record_id(snapshot, solver, repetition),
+                        attempt_id,
                         backend,
                     )
                 prediction_ids = validate_answer_rows(
@@ -515,17 +562,49 @@ class TournamentController:
                 )
                 if reported_summary != summary:
                     raise RuntimeError("creator scorer disagrees with controller exact-match score")
-                return SolverCell(
-                    snapshot_id=snapshot.snapshot_id,
-                    instance_digest=instance.instance_digest,
-                    solver=solver,
-                    repetition=repetition,
+                controller_report = cell_root / "controller-scorer-report.json"
+                controller_report.write_bytes(canonical_json({
+                    "schema_version": 2,
+                    "total": summary.total,
+                    "correct": summary.correct,
+                    "accuracy": summary.accuracy,
+                    "per_item": per_item,
+                }) + b"\n")
+                command_result = cell_root / "command-result.json"
+                command_result.write_bytes(canonical_json({
+                    "returncode": result.returncode,
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "timed_out": result.timed_out,
+                }) + b"\n")
+                artifacts = {
+                    "predictions": prediction_path,
+                    "candidate_scorer_report": score_output,
+                    "controller_scorer_report": controller_report,
+                    "command_result": command_result,
+                }
+                evidence_files = self._attempt_paths(attempt_id)
+                evidence_digests = {
+                    name: file_digest(path) for name, path in artifacts.items()
+                }
+                attempt = SolverAttempt(
+                    attempt_id=attempt_id,
+                    cell_id=cell_id,
+                    attempt_index=attempt_index,
                     state=CellState.SUCCESS,
                     invocation_digest=invocation_digest,
+                    started_at=started_at,
+                    finished_at=datetime.now(timezone.utc).isoformat(),
                     score=summary,
                     prediction_digest=prediction_digest,
                     per_item=per_item,
+                    evidence_files=evidence_files,
+                    evidence_digests=evidence_digests,
                 )
+                self.evidence.freeze_solver_attempt(
+                    self.manifest.epoch_id, attempt, artifacts
+                )
+                return attempt
         except SolverTimedOut as exc:
             state, error = CellState.TIMEOUT, str(exc)
         except ProviderFailure as exc:
@@ -538,14 +617,55 @@ class TournamentController:
             error = message
         except Exception as exc:
             state, error = CellState.SCORER_ERROR, str(exc)
+        with tempfile.TemporaryDirectory(prefix="bba-solver-failure-") as temporary:
+            error_path = Path(temporary) / "error.json"
+            error_path.write_bytes(canonical_json({"state": state.value, "error": error}) + b"\n")
+            evidence_file = (
+                self.evidence.epoch_root(self.manifest.epoch_id)
+                / "solver-attempts"
+                / attempt_id
+                / "artifacts"
+                / "error.json"
+            ).relative_to(self.evidence.root).as_posix()
+            attempt = SolverAttempt(
+                attempt_id=attempt_id,
+                cell_id=cell_id,
+                attempt_index=attempt_index,
+                state=state,
+                invocation_digest=invocation_digest,
+                started_at=started_at,
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                evidence_files={"error": evidence_file},
+                evidence_digests={"error": file_digest(error_path)},
+                error=error,
+            )
+            self.evidence.freeze_solver_attempt(
+                self.manifest.epoch_id, attempt, {"error": error_path}
+            )
+            return attempt
+
+    def _select_solver_cell(
+        self,
+        snapshot: CandidateSnapshot,
+        solver: ModelIdentity,
+        repetition: int,
+        attempts: Sequence[SolverAttempt],
+    ) -> SolverCell:
+        successful = [item for item in attempts if item.state == CellState.SUCCESS]
+        selected = successful[0] if successful else attempts[-1]
         return SolverCell(
             snapshot_id=snapshot.snapshot_id,
-            instance_digest=instance.instance_digest,
+            instance_digest=self.instances[snapshot.snapshot_id].instance_digest,
             solver=solver,
             repetition=repetition,
-            state=state,
-            invocation_digest=invocation_digest,
-            error=error,
+            state=selected.state,
+            invocation_digest=selected.invocation_digest,
+            attempt_ids=tuple(item.attempt_id for item in attempts),
+            selected_attempt_id=selected.attempt_id,
+            score=selected.score,
+            prediction_digest=selected.prediction_digest,
+            per_item=selected.per_item,
+            error=selected.error,
         )
 
     def _feedback(self, snapshot: CandidateSnapshot) -> Dict[str, Any]:
@@ -742,7 +862,34 @@ class TournamentController:
                                     "solver work is complete but evidence is missing: "
                                     + solver_work_id
                                 )
-                            cell = self._run_solver_cell(snapshot, solver, repetition)
+                            cell_id = self._cell_record_id(
+                                snapshot, solver, repetition
+                            )
+                            attempts = list(self.attempts.get(cell_id, ()))
+                            while True:
+                                if attempts and attempts[-1].state == CellState.SUCCESS:
+                                    break
+                                if attempts and attempts[-1].state.value not in set(
+                                    self.manifest.retry_policy.retryable_states
+                                ):
+                                    break
+                                if len(attempts) >= self.manifest.retry_policy.max_attempts:
+                                    break
+                                attempt = self._run_solver_attempt(
+                                    snapshot,
+                                    solver,
+                                    repetition,
+                                    len(attempts) + 1,
+                                )
+                                attempts.append(attempt)
+                                self.attempts[cell_id] = list(attempts)
+                            if not attempts:
+                                raise RuntimeError(
+                                    f"solver cell has no immutable attempt: {cell_id}"
+                                )
+                            cell = self._select_solver_cell(
+                                snapshot, solver, repetition, attempts
+                            )
                             cell_path = self.evidence.publish_record_idempotent(
                                 self.manifest.epoch_id,
                                 "solver-cells",

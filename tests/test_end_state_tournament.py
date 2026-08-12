@@ -7,6 +7,7 @@ from pathlib import Path
 
 from bba.audit import DefectPair
 from bba.evidence import EvidenceStore
+from bba.errors import ProviderFailure
 from bba.protocol import (
     AuditStatus,
     DecisionThresholds,
@@ -18,6 +19,7 @@ from bba.protocol import (
 )
 from tests.fixtures import CalibratedSolverFixture, ExecutableCreatorFixture, LocalFixtureSandbox
 from bba.tournament import TournamentController
+from bba.replay import replay_solver_attempt
 from bba.validator import PackageValidator, read_jsonl_strict
 
 
@@ -76,6 +78,15 @@ class TestEndStateTournament(unittest.TestCase):
         self.assertEqual(len(self.controller.round_seeds), 3)
         self.assertEqual(sum(len(cells) for cells in self.controller.cells.values()), 144)
         self.assertTrue(all(record.passed for record in self.controller.validations.values()))
+        first_cell = next(iter(self.controller.cells.values()))[0]
+        replay = replay_solver_attempt(
+            self.controller.evidence,
+            self.manifest.epoch_id,
+            first_cell.selected_attempt_id,
+        )
+        self.assertTrue(replay["verified"])
+        self.assertFalse(replay["model_call_used"])
+        self.assertEqual(replay["score"], first_cell.score)
 
         for round_index in range(3):
             round_snapshots = [
@@ -271,6 +282,66 @@ class TestEndStateTournament(unittest.TestCase):
         )
         controller.run_public_epoch()
         self.assertEqual(len(controller.round_seeds), 3)
+
+    def test_provider_failures_retry_and_keep_every_attempt(self):
+        class FailTwice:
+            def __init__(self, delegate):
+                self.delegate = delegate
+                self.calls = 0
+
+            def solve(self, *args, **kwargs):
+                self.calls += 1
+                if self.calls <= 2:
+                    raise ProviderFailure(f"fixture provider failure {self.calls}")
+                return self.delegate.solve(*args, **kwargs)
+
+        manifest = replace(
+            self.manifest,
+            epoch_id="retry-fixture",
+            thresholds=DecisionThresholds(sample_count=6, solver_repetitions=1),
+        )
+        evidence = EvidenceStore(self.root)
+        creators = {
+            identity.artifact_id: ExecutableCreatorFixture(0.25)
+            for identity in self.cohort
+        }
+        solvers = {
+            identity.artifact_id: CalibratedSolverFixture(0.55)
+            for identity in self.cohort
+        }
+        target = self.cohort[0].artifact_id
+        solvers[target] = FailTwice(solvers[target])
+        controller = TournamentController(
+            manifest,
+            evidence,
+            PackageValidator(
+                LocalFixtureSandbox(acknowledge_unsafe=True), sample_count=6
+            ),
+            creators,
+            solvers,
+        )
+        controller.run_public_epoch()
+        target_cells = [
+            cell
+            for cells in controller.cells.values()
+            for cell in cells
+            if cell.solver.artifact_id == target
+        ]
+        retried = [cell for cell in target_cells if len(cell.attempt_ids) == 3]
+        self.assertEqual(len(retried), 1)
+        cell = retried[0]
+        attempts = controller.attempts[
+            controller._cell_record_id(
+                controller.snapshot_by_id(cell.snapshot_id),
+                cell.solver,
+                cell.repetition,
+            )
+        ]
+        self.assertEqual(
+            [item.state.value for item in attempts],
+            ["provider_error", "provider_error", "success"],
+        )
+        self.assertEqual(cell.selected_attempt_id, attempts[-1].attempt_id)
 
 
 if __name__ == "__main__":
