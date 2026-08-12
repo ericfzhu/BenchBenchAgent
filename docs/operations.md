@@ -195,6 +195,7 @@ Run the small paid Vertex preflight first:
 
 The command checks every frozen model route and tool contract.
 It prints the frozen invocation and token limits.
+It prints a dollar estimate only when the local catalog has an exact published price for every route.
 It does not deploy an endpoint.
 
 Then run this command:
@@ -275,7 +276,21 @@ Save the answers as one JSON object:
 ```
 
 The real file must contain all six selected IDs.
-Keep the signing-key file outside the evidence root.
+Save the six construct-validity findings as one JSON object:
+
+```json
+{
+  "named_capability_valid": true,
+  "public_materials_sufficient": true,
+  "oracle_consistent": true,
+  "scorer_consistent": true,
+  "no_arbitrary_obscurity": true,
+  "useful_evaluation": true
+}
+```
+
+Keep the Ed25519 private-key file outside the evidence root.
+The public-key file is not secret.
 
 Record the review:
 
@@ -285,14 +300,16 @@ Record the review:
   --snapshot-id SNAPSHOT_ID \
   --reviewer-id REVIEWER_ID \
   --answers reviewer-answers.json \
+  --findings reviewer-findings.json \
   --decision approved \
   --limitation "LIMITATION TEXT" \
   --key-id REVIEWER_KEY_ID \
   --signing-key-file /protected/path/reviewer.key \
+  --public-key-file reviewer-public-key.pem \
   --evidence-root .bba
 ```
 
-An approval fails if one answer is incorrect.
+An approval fails if one answer or one required finding is incorrect.
 The command writes a signed epoch record and an append-only registry record.
 
 ## 13. Freeze the public audit population

@@ -267,6 +267,16 @@ class SealedAuditRunner:
 
     def run(self) -> Dict[str, Any]:
         if self.controller._holdout_record is not None:
+            registry = HoldoutRegistry(self.evidence)
+            commitment_id = registry.commitment_id(
+                self.controller.manifest.hidden_commitments
+            )
+            if registry.state(commitment_id) != "retired":
+                registry.transition(
+                    self.controller.manifest.epoch_id,
+                    self.controller.manifest.hidden_commitments,
+                    "retired",
+                )
             return self.controller._holdout_record
         if self.controller._audit_public_scores is None:
             raise RuntimeError("public audit population is not frozen")

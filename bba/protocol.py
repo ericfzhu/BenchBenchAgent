@@ -90,9 +90,9 @@ class ResourceBudget:
     memory_mb: int = 2048
     process_limit: int = 64
     cpu_seconds: int = 600
-    max_epoch_calls: int = 5000
-    max_epoch_input_tokens: int = 100_000_000
-    max_epoch_output_tokens: int = 25_000_000
+    max_epoch_calls: int = 150_000
+    max_epoch_input_tokens: int = 150_000_000
+    max_epoch_output_tokens: int = 40_000_000
     max_estimated_cost_usd: float = 5000.0
 
     def __post_init__(self) -> None:

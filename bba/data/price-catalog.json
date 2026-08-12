@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "catalog_version": "gcp-serverless-prices-2026-08-12-unverified",
+  "effective_date": "2026-08-12",
+  "models": {},
+  "note": "Add only prices that Google Cloud publishes for an exact model route. An empty catalog prevents a false dollar estimate. Call and token limits remain mandatory."
+}

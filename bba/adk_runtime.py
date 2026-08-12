@@ -103,6 +103,7 @@ class AdkInvocationTrace:
     prompt_tokens: int
     output_tokens: int
     total_tokens: int
+    response_model_versions: Tuple[str, ...]
     usage_metadata_complete: bool
     started_at: str
     finished_at: str
@@ -114,9 +115,10 @@ class AdkInvocationTrace:
 class _EvidencePlugin(BasePlugin):
     """Capture hashes and usage without retaining prompts or tool arguments."""
 
-    def __init__(self, token_budget: int) -> None:
+    def __init__(self, token_budget: int, behavior_settings: Mapping[str, Any]) -> None:
         super().__init__(name=f"bba-evidence-{uuid4().hex}")
         self.token_budget = token_budget
+        self.behavior_settings = dict(behavior_settings)
         self.model_calls = 0
         self.usage_reports = 0
         self.tool_calls = []
@@ -125,6 +127,7 @@ class _EvidencePlugin(BasePlugin):
         self.prompt_tokens = 0
         self.output_tokens = 0
         self.total_tokens = 0
+        self.response_model_versions = []
 
     async def before_model_callback(self, *, callback_context, llm_request):
         remaining = self.token_budget - self.total_tokens
@@ -135,10 +138,16 @@ class _EvidencePlugin(BasePlugin):
         else:
             configured = llm_request.config.max_output_tokens
             llm_request.config.max_output_tokens = min(configured or remaining, remaining)
+        for name in ("temperature", "top_p"):
+            value = self.behavior_settings.get(name)
+            if value is not None:
+                setattr(llm_request.config, name, value)
         self.model_calls += 1
         return None
 
     async def after_model_callback(self, *, callback_context, llm_response):
+        if llm_response.model_version:
+            self.response_model_versions.append(str(llm_response.model_version))
         usage = llm_response.usage_metadata
         if usage is not None:
             self.usage_reports += 1
@@ -217,7 +226,7 @@ async def _run_agent(
     session_id = f"{role}-{session_token}"
     invocation_id = f"inv-{session_token}"
     user_id = identity.artifact_id
-    plugin = _EvidencePlugin(token_budget)
+    plugin = _EvidencePlugin(token_budget, identity.behavior_settings)
     session_service = InMemorySessionService()
     await session_service.create_session(
         app_name=app_name,
@@ -271,6 +280,7 @@ async def _run_agent(
                 prompt_tokens=plugin.prompt_tokens,
                 output_tokens=plugin.output_tokens,
                 total_tokens=plugin.total_tokens,
+                response_model_versions=tuple(plugin.response_model_versions),
                 usage_metadata_complete=plugin.usage_reports == plugin.model_calls,
                 started_at=started_at,
                 finished_at=_utc_now(),

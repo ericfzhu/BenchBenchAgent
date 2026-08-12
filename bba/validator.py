@@ -183,7 +183,7 @@ class PackageValidator:
         self.sample_count = sample_count
         self.timeout_seconds = timeout_seconds
         self.dependency_catalog = dependency_catalog or LocalWheelCatalog(
-            Path(__file__).resolve().parents[1] / "dependency-wheels"
+            Path(__file__).resolve().parent / "data" / "dependency-wheels"
         )
         self.dependency_cache = Path(
             dependency_cache or Path(tempfile.gettempdir()) / "bba-dependency-environments"

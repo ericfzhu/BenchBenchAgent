@@ -125,6 +125,7 @@ Each invocation trace must contain these items:
 The public trace must not contain prompts or tool arguments.
 The model response must contain token-use data.
 BBA must reject a production response that does not contain this data.
+BBA must apply each supported frozen behavior setting to the ADK request.
 
 Before paid creator work, BBA must run a small preflight for each catalog identity.
 The preflight must check serverless global routing, access, quota, function calling, token metadata, and the frozen response identity.
@@ -439,6 +440,13 @@ It is not immutable evidence.
 The controller must save one work item for each creator run, validation, and solver cell.
 Each work item must bind its frozen input digest.
 The controller must save immutable evidence before it marks the work item complete.
+The controller must reserve epoch calls and tokens before each model attempt.
+The reservation must be transactional and idempotent across resume.
+The controller must stop before a new attempt can exceed a frozen epoch limit.
+
+BBA can run independent solver cells with bounded local concurrency.
+It must use deterministic work IDs, a global worker limit, and a per-publisher limit.
+Concurrency must not cross creator-round, validation, public-closure, or hidden-audit barriers.
 
 The controller must restore complete work from immutable evidence after a restart.
 The controller must not repeat complete inference work.

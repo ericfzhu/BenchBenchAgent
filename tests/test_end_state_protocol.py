@@ -30,6 +30,7 @@ from bba.protocol import (
 )
 from bba.runtime import SandboxUnavailable, SecureSandbox
 from bba.scheduler import BoundedScheduler
+from bba.pricing import PriceCatalog
 from tests.fixtures import ExecutableCreatorFixture, LocalFixtureSandbox
 from bba.validator import PackageValidator
 
@@ -200,7 +201,7 @@ class TestEndStateProtocol(unittest.TestCase):
             lock = root / "requirements.lock"
             lock.write_text("# Standard library only\n", encoding="utf-8")
             catalog = LocalWheelCatalog(
-                Path(__file__).resolve().parents[1] / "dependency-wheels"
+                Path(__file__).resolve().parents[1] / "bba" / "data" / "dependency-wheels"
             )
             environment = build_dependency_environment(
                 lock, catalog, root / "environments"
@@ -226,6 +227,9 @@ class TestEndStateProtocol(unittest.TestCase):
             ("a", "google", lambda: 1),
         ))
         self.assertEqual(result, {"a": 1, "b": 2})
+        price = PriceCatalog().estimate(value)
+        self.assertFalse(price["complete"])
+        self.assertIsNone(price["conservative_estimate_usd"])
 
     def test_invalid_validation_does_not_claim_an_instance(self):
         sandbox = LocalFixtureSandbox(acknowledge_unsafe=True)

@@ -13,7 +13,7 @@ from typing import Any, Dict, Iterator, Mapping
 from bba.protocol import ExperimentManifest, digest_json
 
 
-STATE_SCHEMA_VERSION = 1
+STATE_SCHEMA_VERSION = 2
 PHASES = (
     "created",
     "public_running",
@@ -67,7 +67,7 @@ class LocalStateStore:
     def _initialize(self) -> None:
         with self._connect() as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in (0, STATE_SCHEMA_VERSION):
+            if version not in (0, 1, STATE_SCHEMA_VERSION):
                 raise RuntimeError(
                     f"unsupported local state schema {version}; expected {STATE_SCHEMA_VERSION}"
                 )
@@ -108,9 +108,123 @@ class LocalStateStore:
                     FOREIGN KEY (epoch_id, work_id)
                         REFERENCES work_items(epoch_id, work_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS inference_reservations (
+                    epoch_id TEXT NOT NULL,
+                    reservation_id TEXT NOT NULL,
+                    reserved_calls INTEGER NOT NULL,
+                    reserved_input_tokens INTEGER NOT NULL,
+                    reserved_output_tokens INTEGER NOT NULL,
+                    actual_calls INTEGER,
+                    actual_input_tokens INTEGER,
+                    actual_output_tokens INTEGER,
+                    reconciled INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (epoch_id, reservation_id),
+                    FOREIGN KEY (epoch_id) REFERENCES epochs(epoch_id)
+                );
                 """
             )
             connection.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION}")
+
+    def reserve_inference(
+        self,
+        epoch_id: str,
+        reservation_id: str,
+        calls: int,
+        input_tokens: int,
+        output_tokens: int,
+        limits: Mapping[str, int],
+    ) -> None:
+        if min(calls, input_tokens, output_tokens) < 0:
+            raise ValueError("inference reservations cannot be negative")
+        now = _utc_now()
+        with self._transaction() as connection:
+            existing = connection.execute(
+                "SELECT * FROM inference_reservations WHERE epoch_id = ? AND reservation_id = ?",
+                (epoch_id, reservation_id),
+            ).fetchone()
+            if existing is not None:
+                requested = (calls, input_tokens, output_tokens)
+                frozen = (
+                    existing["reserved_calls"],
+                    existing["reserved_input_tokens"],
+                    existing["reserved_output_tokens"],
+                )
+                if requested != frozen:
+                    raise ValueError("inference reservation conflicts with frozen values")
+                return
+            totals = connection.execute(
+                "SELECT "
+                "COALESCE(SUM(CASE WHEN reconciled = 1 THEN actual_calls ELSE reserved_calls END), 0) calls, "
+                "COALESCE(SUM(CASE WHEN reconciled = 1 THEN actual_input_tokens ELSE reserved_input_tokens END), 0) input_tokens, "
+                "COALESCE(SUM(CASE WHEN reconciled = 1 THEN actual_output_tokens ELSE reserved_output_tokens END), 0) output_tokens "
+                "FROM inference_reservations WHERE epoch_id = ?",
+                (epoch_id,),
+            ).fetchone()
+            projected = {
+                "calls": totals["calls"] + calls,
+                "input_tokens": totals["input_tokens"] + input_tokens,
+                "output_tokens": totals["output_tokens"] + output_tokens,
+            }
+            for name, value in projected.items():
+                if value > int(limits[name]):
+                    raise RuntimeError(f"epoch {name.replace('_', '-')} limit would be exceeded")
+            connection.execute(
+                "INSERT INTO inference_reservations "
+                "(epoch_id, reservation_id, reserved_calls, reserved_input_tokens, "
+                "reserved_output_tokens, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (epoch_id, reservation_id, calls, input_tokens, output_tokens, now),
+            )
+
+    def reconcile_inference(
+        self,
+        epoch_id: str,
+        reservation_id: str,
+        calls: int,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        now = _utc_now()
+        with self._transaction() as connection:
+            row = connection.execute(
+                "SELECT * FROM inference_reservations WHERE epoch_id = ? AND reservation_id = ?",
+                (epoch_id, reservation_id),
+            ).fetchone()
+            if row is None:
+                raise KeyError(f"inference reservation does not exist: {reservation_id}")
+            actual = (calls, input_tokens, output_tokens)
+            if row["reconciled"]:
+                existing = (
+                    row["actual_calls"], row["actual_input_tokens"], row["actual_output_tokens"]
+                )
+                if existing != actual:
+                    raise ValueError("reconciled inference usage cannot change")
+                return
+            if (
+                calls > row["reserved_calls"]
+                or input_tokens > row["reserved_input_tokens"]
+                or output_tokens > row["reserved_output_tokens"]
+            ):
+                raise RuntimeError("actual inference usage exceeded its reservation")
+            connection.execute(
+                "UPDATE inference_reservations SET actual_calls = ?, actual_input_tokens = ?, "
+                "actual_output_tokens = ?, reconciled = 1, updated_at = ? "
+                "WHERE epoch_id = ? AND reservation_id = ?",
+                (calls, input_tokens, output_tokens, now, epoch_id, reservation_id),
+            )
+
+    def inference_usage(self, epoch_id: str) -> Dict[str, int]:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT "
+                "COALESCE(SUM(CASE WHEN reconciled = 1 THEN actual_calls ELSE reserved_calls END), 0) calls, "
+                "COALESCE(SUM(CASE WHEN reconciled = 1 THEN actual_input_tokens ELSE reserved_input_tokens END), 0) input_tokens, "
+                "COALESCE(SUM(CASE WHEN reconciled = 1 THEN actual_output_tokens ELSE reserved_output_tokens END), 0) output_tokens "
+                "FROM inference_reservations WHERE epoch_id = ?",
+                (epoch_id,),
+            ).fetchone()
+            return dict(row)
 
     @staticmethod
     def _touch_epoch(

@@ -38,6 +38,7 @@ from bba.protocol import (
 )
 from bba.registry import PromotionRegistry
 from bba.scoring import CandidateEvaluation, classify_candidate, matrix, rank_creators, rank_solvers
+from bba.scheduler import BoundedScheduler
 from bba.state import LocalStateStore
 from bba.validator import PackageValidator, read_jsonl_strict, validate_answer_rows, validate_item_rows, write_jsonl
 
@@ -76,6 +77,7 @@ class TournamentController:
         creator_backends: Optional[Mapping[str, CreatorBackend]] = None,
         solver_backends: Optional[Mapping[str, SolverBackend]] = None,
         state: Optional[LocalStateStore] = None,
+        scheduler: Optional[BoundedScheduler] = None,
     ):
         self.manifest = manifest
         self.evidence = evidence
@@ -83,6 +85,7 @@ class TournamentController:
         self.creator_backends = dict(creator_backends or {})
         self.solver_backends = dict(solver_backends or {})
         self.state = state or LocalStateStore(self.evidence.root / "bba-state.sqlite3")
+        self.scheduler = scheduler or BoundedScheduler(workers=4, per_publisher=2)
         self.state.register_epoch(manifest)
         expected = {identity.artifact_id for identity in manifest.cohort}
         if self.creator_backends and set(self.creator_backends) != expected:
@@ -493,6 +496,18 @@ class TournamentController:
         invocation_digest = digest_json(invocation)
         cell_id = self._cell_record_id(snapshot, solver, repetition)
         attempt_id = f"{cell_id}--attempt-{attempt_index}"
+        self.state.reserve_inference(
+            self.manifest.epoch_id,
+            attempt_id,
+            self.manifest.budget.max_llm_calls,
+            self.manifest.budget.max_tokens,
+            self.manifest.budget.max_tokens,
+            {
+                "calls": self.manifest.budget.max_epoch_calls,
+                "input_tokens": self.manifest.budget.max_epoch_input_tokens,
+                "output_tokens": self.manifest.budget.max_epoch_output_tokens,
+            },
+        )
         started_at = datetime.now(timezone.utc).isoformat()
         artifacts: Dict[str, Path] = {}
         try:
@@ -616,6 +631,7 @@ class TournamentController:
                 self.evidence.freeze_solver_attempt(
                     self.manifest.epoch_id, attempt, artifacts
                 )
+                self._reconcile_attempt_usage(attempt_id)
                 return attempt
         except SolverTimedOut as exc:
             state, error = CellState.TIMEOUT, str(exc)
@@ -654,7 +670,22 @@ class TournamentController:
             self.evidence.freeze_solver_attempt(
                 self.manifest.epoch_id, attempt, {"error": error_path}
             )
+            self._reconcile_attempt_usage(attempt_id)
             return attempt
+
+    def _reconcile_attempt_usage(self, attempt_id: str) -> None:
+        trace_root = self.evidence.epoch_root(self.manifest.epoch_id) / "agent-traces"
+        trace_paths = sorted(trace_root.glob(f"{attempt_id}*.json"))
+        if not trace_paths:
+            return
+        trace = read_json(trace_paths[-1])
+        self.state.reconcile_inference(
+            self.manifest.epoch_id,
+            attempt_id,
+            int(trace.get("model_calls", 0)),
+            int(trace.get("prompt_tokens", 0)),
+            int(trace.get("output_tokens", 0)),
+        )
 
     def _select_solver_cell(
         self,
@@ -679,6 +710,53 @@ class TournamentController:
             per_item=selected.per_item,
             error=selected.error,
         )
+
+    def _execute_solver_cell(
+        self,
+        snapshot: CandidateSnapshot,
+        solver: ModelIdentity,
+        repetition: int,
+    ) -> SolverCell:
+        solver_work_id = self._solver_work_id(snapshot, solver, repetition)
+        solver_payload = self._solver_payload(snapshot, solver, repetition)
+        if not self.state.claim(
+            self.manifest.epoch_id,
+            solver_work_id,
+            "solver",
+            solver_payload,
+        ):
+            raise RuntimeError(
+                "solver work is complete but evidence is missing: " + solver_work_id
+            )
+        cell_id = self._cell_record_id(snapshot, solver, repetition)
+        attempts = list(self.attempts.get(cell_id, ()))
+        while True:
+            if attempts and attempts[-1].state == CellState.SUCCESS:
+                break
+            if attempts and attempts[-1].state.value not in set(
+                self.manifest.retry_policy.retryable_states
+            ):
+                break
+            if len(attempts) >= self.manifest.retry_policy.max_attempts:
+                break
+            attempt = self._run_solver_attempt(
+                snapshot, solver, repetition, len(attempts) + 1
+            )
+            attempts.append(attempt)
+            self.attempts[cell_id] = list(attempts)
+        if not attempts:
+            raise RuntimeError(f"solver cell has no immutable attempt: {cell_id}")
+        cell = self._select_solver_cell(snapshot, solver, repetition, attempts)
+        cell_path = self.evidence.publish_record_idempotent(
+            self.manifest.epoch_id, "solver-cells", cell_id, cell
+        )
+        self.state.succeed(
+            self.manifest.epoch_id,
+            solver_work_id,
+            self._evidence_ref(cell_path),
+            file_digest(cell_path),
+        )
+        return cell
 
     def _feedback(self, snapshot: CandidateSnapshot) -> Dict[str, Any]:
         validation = self.validations[snapshot.snapshot_id]
@@ -731,6 +809,19 @@ class TournamentController:
                         f"creator work is complete but snapshot evidence is missing: {work_id}"
                     )
                 backend = self.creator_backends[creator.artifact_id]
+                reservation_id = f"{work_id}--inference"
+                self.state.reserve_inference(
+                    self.manifest.epoch_id,
+                    reservation_id,
+                    self.manifest.budget.max_llm_calls,
+                    self.manifest.budget.max_tokens,
+                    self.manifest.budget.max_tokens,
+                    {
+                        "calls": self.manifest.budget.max_epoch_calls,
+                        "input_tokens": self.manifest.budget.max_epoch_input_tokens,
+                        "output_tokens": self.manifest.budget.max_epoch_output_tokens,
+                    },
+                )
                 with tempfile.TemporaryDirectory(prefix="bba-creator-output-") as temporary:
                     output = Path(temporary) / "design"
                     output.mkdir()
@@ -761,6 +852,19 @@ class TournamentController:
                         f"{snapshot.snapshot_id}--creator",
                         backend,
                     )
+                    trace_root = self.evidence.epoch_root(self.manifest.epoch_id) / "agent-traces"
+                    trace_paths = sorted(
+                        trace_root.glob(f"{snapshot.snapshot_id}--creator*.json")
+                    )
+                    if trace_paths:
+                        trace = read_json(trace_paths[-1])
+                        self.state.reconcile_inference(
+                            self.manifest.epoch_id,
+                            reservation_id,
+                            int(trace.get("model_calls", 0)),
+                            int(trace.get("prompt_tokens", 0)),
+                            int(trace.get("output_tokens", 0)),
+                        )
                 metadata_path = (
                     self.evidence.epoch_root(self.manifest.epoch_id)
                     / "candidates"
@@ -851,71 +955,29 @@ class TournamentController:
                             "valid design has no frozen evaluation instance: "
                             + snapshot.snapshot_id
                         )
-                    for solver in self.manifest.cohort:
-                        for repetition in range(
-                            self.manifest.thresholds.solver_repetitions
-                        ):
+                    for repetition in range(
+                        self.manifest.thresholds.solver_repetitions
+                    ):
+                        work = []
+                        for solver in self.manifest.cohort:
                             cell_key = (solver.artifact_id, repetition)
                             if cell_key in existing_cells:
                                 continue
-                            solver_work_id = self._solver_work_id(
+                            work_id = self._solver_work_id(
                                 snapshot, solver, repetition
                             )
-                            solver_payload = self._solver_payload(
-                                snapshot, solver, repetition
-                            )
-                            if not self.state.claim(
-                                self.manifest.epoch_id,
-                                solver_work_id,
-                                "solver",
-                                solver_payload,
-                            ):
-                                raise RuntimeError(
-                                    "solver work is complete but evidence is missing: "
-                                    + solver_work_id
-                                )
-                            cell_id = self._cell_record_id(
-                                snapshot, solver, repetition
-                            )
-                            attempts = list(self.attempts.get(cell_id, ()))
-                            while True:
-                                if attempts and attempts[-1].state == CellState.SUCCESS:
-                                    break
-                                if attempts and attempts[-1].state.value not in set(
-                                    self.manifest.retry_policy.retryable_states
-                                ):
-                                    break
-                                if len(attempts) >= self.manifest.retry_policy.max_attempts:
-                                    break
-                                attempt = self._run_solver_attempt(
-                                    snapshot,
-                                    solver,
-                                    repetition,
-                                    len(attempts) + 1,
-                                )
-                                attempts.append(attempt)
-                                self.attempts[cell_id] = list(attempts)
-                            if not attempts:
-                                raise RuntimeError(
-                                    f"solver cell has no immutable attempt: {cell_id}"
-                                )
-                            cell = self._select_solver_cell(
-                                snapshot, solver, repetition, attempts
-                            )
-                            cell_path = self.evidence.publish_record_idempotent(
-                                self.manifest.epoch_id,
-                                "solver-cells",
-                                self._cell_record_id(snapshot, solver, repetition),
-                                cell,
-                            )
-                            self.state.succeed(
-                                self.manifest.epoch_id,
-                                solver_work_id,
-                                self._evidence_ref(cell_path),
-                                file_digest(cell_path),
-                            )
+                            work.append((
+                                work_id,
+                                solver.publisher,
+                                lambda selected=solver, selected_repetition=repetition: self._execute_solver_cell(
+                                    snapshot, selected, selected_repetition
+                                ),
+                            ))
+                        results = self.scheduler.map(work)
+                        for cell in results.values():
                             cells.append(cell)
-                            existing_cells[cell_key] = cell
+                            existing_cells[(cell.solver.artifact_id, cell.repetition)] = cell
+                    cells.sort(key=lambda item: (item.solver.artifact_id, item.repetition))
 
             self.evidence.publish_record_idempotent(
                 self.manifest.epoch_id,

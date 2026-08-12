@@ -44,8 +44,9 @@ def build_evaluator_identity(
     }
     components["pyproject.toml"] = file_digest(repository_root / "pyproject.toml")
     components["dependency-wheel-catalog"] = file_digest(
-        repository_root / "dependency-wheels" / "catalog.json"
+        package_root / "data" / "dependency-wheels" / "catalog.json"
     )
+    components["price-catalog"] = file_digest(package_root / "data" / "price-catalog.json")
     runtime = {
         "python": sys.version,
         "distributions": {

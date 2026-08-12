@@ -12,6 +12,8 @@ from bba.protocol import (
     ExperimentManifest,
     ModelIdentity,
     PromotionDecision,
+    ReviewFindings,
+    SolverAttempt,
 )
 from bba.audit import audit_evaluator
 from bba.tournament import TournamentController
@@ -29,6 +31,8 @@ __all__ = [
     "LocalStateStore",
     "ModelIdentity",
     "PromotionDecision",
+    "ReviewFindings",
+    "SolverAttempt",
     "TournamentController",
     "AdkCreatorBackend",
     "AdkSolverBackend",

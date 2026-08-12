@@ -22,6 +22,7 @@ from bba.protocol import (
     to_primitive,
 )
 from bba.preflight import run_preflight
+from bba.pricing import PriceCatalog
 from bba.replay import replay_solver_attempt
 from bba.runtime import SecureSandbox
 from bba.state import LocalStateStore, local_file_lock
@@ -195,6 +196,7 @@ def _epoch_preflight(args: argparse.Namespace) -> int:
         manifest = evidence.load_manifest(args.epoch_id)
         _print_json({
             "estimate": estimate_epoch(manifest),
+            "price_estimate": PriceCatalog().estimate(manifest),
             "preflight": run_preflight(manifest, evidence),
         })
     return 0

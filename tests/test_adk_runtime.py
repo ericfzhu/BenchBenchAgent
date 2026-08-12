@@ -60,6 +60,7 @@ def _tool_call(call_id: str, name: str, args: dict) -> LlmResponse:
             candidates_token_count=1,
             total_token_count=2,
         ),
+        model_version="scripted-v1",
     )
 
 

@@ -10,9 +10,28 @@ from unittest.mock import patch
 
 from bba.cli import main
 from bba.protocol import digest_json
+from bba.state import LocalStateStore
 
 
 class TestLocalEpochCli(unittest.TestCase):
+    def test_inference_reservations_are_idempotent_and_bounded(self):
+        from tests.test_end_state_protocol import manifest
+
+        with tempfile.TemporaryDirectory() as temporary:
+            state = LocalStateStore(Path(temporary) / "state.sqlite3")
+            value = manifest("reservation-test")
+            state.register_epoch(value)
+            limits = {"calls": 2, "input_tokens": 10, "output_tokens": 10}
+            state.reserve_inference(value.epoch_id, "one", 1, 5, 5, limits)
+            state.reserve_inference(value.epoch_id, "one", 1, 5, 5, limits)
+            state.reconcile_inference(value.epoch_id, "one", 1, 2, 3)
+            self.assertEqual(
+                state.inference_usage(value.epoch_id),
+                {"calls": 1, "input_tokens": 2, "output_tokens": 3},
+            )
+            with self.assertRaises(RuntimeError):
+                state.reserve_inference(value.epoch_id, "two", 2, 1, 1, limits)
+
     def test_create_and_status_use_only_the_local_evidence_root(self):
         epoch_id = "local-cli-test"
         with tempfile.TemporaryDirectory(prefix="bba-cli-state-") as temporary:

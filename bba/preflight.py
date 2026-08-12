@@ -47,6 +47,8 @@ def run_preflight(
             raise RuntimeError(f"model did not use function calling: {identity.artifact_id}")
         if trace.identity != identity:
             raise RuntimeError(f"preflight response identity mismatch: {identity.artifact_id}")
+        returned_versions = tuple(trace.response_model_versions)
+        identity_check = "verified" if returned_versions else "provider_field_unavailable"
         results.append({
             "identity": identity.artifact_id,
             "route": identity.adk_model,
@@ -58,6 +60,8 @@ def run_preflight(
                 "total_tokens": trace.total_tokens,
             },
             "tool_contract_passed": True,
+            "returned_model_versions": returned_versions,
+            "response_identity_check": identity_check,
             "serverless": True,
         })
     record = {

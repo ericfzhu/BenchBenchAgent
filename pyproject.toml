@@ -25,3 +25,6 @@ bba = "bba.cli:main"
 
 [tool.setuptools]
 packages = ["bba"]
+
+[tool.setuptools.package-data]
+bba = ["data/*.json", "data/dependency-wheels/*.json", "data/dependency-wheels/*.whl"]
