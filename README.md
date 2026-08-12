@@ -11,7 +11,7 @@ BBA makes a creator-by-solver score matrix.
 BBA also makes separate creator and solver ranks.
 Independent evidence must certify solvability. A separate human reviewer must approve the certificate and benchmark before BBA adds it to the canonical registry.
 A sealed audit tests the public evaluator after the public epoch is closed.
-Version `0.12.0` also includes a localhost operator console.
+Version `0.13.0` also includes a localhost operator console and redacted ADK observability.
 The console controls the same local controller and evidence as the CLI.
 Paid Vertex and full production acceptance evidence are still required.
 See the [implementation status](docs/implementation-status.md) before you run a production epoch.
@@ -217,10 +217,32 @@ BBA stores these outputs:
 - Typed, digest-bound solvability certificates
 - Public evaluation records
 - Holdout audit records
+- Redacted local ADK activity, token-use, latency, tool-use, and error records
 - An append-only benchmark registry
 
 Non-success solver states do not contain a numeric score.
 A timeout or provider error is not a zero score.
+
+## Agent observability
+
+BBA observes each creator and solver invocation through a Google ADK plugin.
+It records the ADK lifecycle, model-call count, tool names, token use, latency,
+model version, and error type. It stores these records in the local evidence
+root.
+
+BBA configures ADK to capture no message content. The operator records do not
+contain prompts, tool arguments, tool results, model output, predictions,
+debrief text, private gold, or hidden audit content.
+
+Show the current summary:
+
+```bash
+.venv/bin/bba epoch observability \
+  --epoch-id EPOCH_ID \
+  --evidence-root .bba
+```
+
+The localhost console also shows an **Agent activity** page for each epoch.
 
 ## Documents
 

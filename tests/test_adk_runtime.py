@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from dataclasses import replace
@@ -19,6 +20,7 @@ from bba.adk_runtime import (
     SOLVER_INSTRUCTION,
     AdkCreatorBackend,
     AdkSolverBackend,
+    _private_telemetry_config,
     resolve_model,
 )
 from bba.catalog import CATALOG_DIGEST, CATALOG_VERSION, SERVERLESS_COHORT
@@ -26,6 +28,7 @@ from bba.evaluator_identity import build_evaluator_identity
 from bba.errors import PredictionParseFailure, ProviderFailure
 from bba.evidence import EvidenceStore
 from bba.gcp import configure_gcp_environment
+from bba.observability import LocalObservabilityStore
 from bba.protocol import ExperimentManifest, ModelIdentity, ResourceBudget, digest_json
 from bba.preflight import run_preflight
 
@@ -117,6 +120,34 @@ class TestAdkRuntime(unittest.TestCase):
     def test_exact_stable_adk_release_is_loaded(self):
         self.assertEqual(ADK_VERSION, "2.6.3")
 
+    def test_adk_message_content_capture_fails_closed(self):
+        config = _private_telemetry_config()
+        self.assertFalse(config.should_add_content_to_logs)
+        self.assertFalse(config.should_add_content_to_experimental_spans)
+        self.assertFalse(config.should_add_content_to_legacy_spans)
+        previous_lock = os.environ.get("ADK_TELEMETRY_IGNORE_RUN_CONFIG")
+        previous_content = os.environ.get(
+            "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
+        )
+        os.environ["ADK_TELEMETRY_IGNORE_RUN_CONFIG"] = "true"
+        os.environ["OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"] = "SPAN_AND_EVENT"
+        try:
+            with self.assertRaises(RuntimeError):
+                _private_telemetry_config()
+        finally:
+            if previous_lock is None:
+                os.environ.pop("ADK_TELEMETRY_IGNORE_RUN_CONFIG", None)
+            else:
+                os.environ["ADK_TELEMETRY_IGNORE_RUN_CONFIG"] = previous_lock
+            if previous_content is None:
+                os.environ.pop(
+                    "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT", None
+                )
+            else:
+                os.environ[
+                    "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT"
+                ] = previous_content
+
     def test_model_resolution_stays_on_google_cloud(self):
         self.assertEqual(resolve_model(self.identity).model, "scripted")
         open_model = resolve_model(ModelIdentity(
@@ -181,6 +212,76 @@ class TestAdkRuntime(unittest.TestCase):
         self.assertTrue(trace.usage_metadata_complete)
         self.assertEqual(trace.total_tokens, 6)
         self.assertTrue(trace.final_response_digest)
+
+    def test_adk_observability_records_lifecycle_without_content(self):
+        private_marker = "PRIVATE-TOOL-CONTENT-MUST-NOT-BE-OBSERVED"
+        model = ScriptedLlm(model="scripted-observed", responses=[
+            _tool_call("write-1", "write_candidate_file", {
+                "path": "README.md",
+                "content": private_marker,
+            }),
+            _tool_call("finish-1", "finish_candidate", {}),
+            _final(private_marker),
+        ])
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            store = LocalObservabilityStore(root / "evidence")
+            backend = AdkCreatorBackend(model, observability_store=store)
+            backend.build(
+                self.identity,
+                0,
+                root / "candidate",
+                {},
+                None,
+                self.manifest,
+            )
+            records = store.invocations(self.manifest.epoch_id)
+            summary = store.summary(self.manifest.epoch_id)
+            serialized = json.dumps(records, sort_keys=True)
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["status"], "success")
+        self.assertEqual(records[0]["model_calls"], 3)
+        self.assertEqual(records[0]["tool_call_count"], 2)
+        self.assertEqual(
+            records[0]["tool_calls"],
+            ["write_candidate_file", "finish_candidate"],
+        )
+        self.assertFalse(records[0]["content_captured"])
+        self.assertGreaterEqual(records[0]["duration_ms"], 0)
+        self.assertGreaterEqual(records[0]["model_duration_ms"], 0)
+        self.assertGreaterEqual(records[0]["tool_duration_ms"], 0)
+        self.assertNotIn(private_marker, serialized)
+        self.assertNotIn("tool_args", serialized)
+        self.assertEqual(summary["totals"]["invocations"], 1)
+        self.assertEqual(summary["totals"]["total_tokens"], 6)
+        self.assertTrue(summary["usage_metadata_complete"])
+
+    def test_observability_recovers_an_interrupted_invocation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            store = LocalObservabilityStore(Path(temporary))
+            store.update({
+                "schema_version": 1,
+                "observation_id": "a" * 32,
+                "epoch_id": self.manifest.epoch_id,
+                "role": "solver",
+                "identity": {"artifact_id": self.identity.artifact_id},
+                "status": "running",
+                "started_at": "2026-08-12T00:00:00+00:00",
+                "model_calls": 1,
+                "tool_call_count": 0,
+                "prompt_tokens": 0,
+                "output_tokens": 0,
+                "total_tokens": 0,
+                "duration_ms": 1.0,
+                "usage_metadata_complete": False,
+            })
+            self.assertEqual(store.recover_interrupted(self.manifest.epoch_id), 1)
+            summary = store.summary(self.manifest.epoch_id)
+        self.assertEqual(summary["active"], 0)
+        self.assertEqual(summary["failures"], 1)
+        self.assertEqual(summary["status_counts"], {"interrupted": 1})
+        self.assertEqual(summary["recent"][0]["error_type"], "ProcessInterrupted")
 
     def test_creator_message_does_not_contain_an_evaluation_seed(self):
         model = ScriptedLlm(model="scripted-seed-blind", responses=[
@@ -308,12 +409,13 @@ class TestAdkRuntime(unittest.TestCase):
                 "content": "over budget",
             }),
         ])
-        backend = AdkCreatorBackend(model)
         constrained = replace(
             self.manifest,
             budget=ResourceBudget(max_tokens=1),
         )
         with tempfile.TemporaryDirectory() as temporary:
+            store = LocalObservabilityStore(Path(temporary) / "evidence")
+            backend = AdkCreatorBackend(model, observability_store=store)
             with self.assertRaises(ProviderFailure):
                 backend.build(
                     self.identity,
@@ -323,9 +425,13 @@ class TestAdkRuntime(unittest.TestCase):
                     None,
                     constrained,
                 )
+            summary = store.summary(self.manifest.epoch_id)
         trace = backend.take_trace()
         self.assertEqual(trace.status, "provider_error")
         self.assertEqual(trace.total_tokens, 2)
+        self.assertEqual(summary["failures"], 1)
+        self.assertEqual(summary["status_counts"], {"provider_error": 1})
+        self.assertEqual(summary["recent"][0]["error_type"], "RuntimeError")
 
 
 if __name__ == "__main__":

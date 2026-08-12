@@ -1,7 +1,7 @@
 # BBA implementation status
 
 This document records the implementation and verification state.
-It applies to BBA version `0.12.0` and protocol `bba.epoch.v7`.
+It applies to BBA version `0.13.0` and protocol `bba.epoch.v8`.
 The [protocol specification](protocol.md) is the normative source.
 The [completion plan](implementation-plan.md) gives the work order and acceptance gates.
 
@@ -34,6 +34,7 @@ The [completion plan](implementation-plan.md) gives the work order and acceptanc
 | 15. Bounded concurrency | `Implemented` | `BoundedScheduler` runs public solver cells with deterministic work IDs, a global limit, and a per-publisher limit. Creator rounds, validation, and the public-to-hidden barrier remain ordered. Resume and retry tests run with this scheduler. |
 | 16. Continuous integration | `Removed` | BBA does not use GitHub Actions. Run tests, package checks, sandbox checks, and paid Vertex preflight from the local operator host. |
 | 17. Local operator console | `Implemented` | `bba web` binds to IPv4 loopback. It uses the existing CLI and controller contracts. It can queue epoch operations, record certificates and signed reviews, and show both rankings, the score matrix, and the audit vector. Host, origin, form-token, and confirmation checks protect local changes. |
+| 18. ADK observability | `Implemented` | A Google ADK plugin records redacted lifecycle, token-use, tool-use, latency, model-version, and error metadata. ADK message-content capture is off. The CLI and localhost console show local epoch summaries. Privacy, success, and failure tests use deterministic ADK models. |
 
 ## Local verification
 

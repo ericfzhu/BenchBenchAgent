@@ -1,6 +1,6 @@
 # BBA protocol specification
 
-This document gives the normative rules for BBA protocol version `bba.epoch.v7`.
+This document gives the normative rules for BBA protocol version `bba.epoch.v8`.
 The word `must` identifies a required rule.
 
 ## 1. Purpose
@@ -121,9 +121,17 @@ Each invocation trace must contain these items:
 - Token counts
 - Event digests
 - Start and finish times
+- Invocation, model, and tool elapsed times
+- Model and tool error counts
 - Final status
 
 The public trace must not contain prompts or tool arguments.
+BBA must use an ADK plugin to record operational invocation data.
+BBA must configure native ADK telemetry to capture no message content.
+The local operational record can contain model identities, session and
+invocation IDs, tool names, token counts, elapsed times, and error types.
+It must not contain prompts, tool arguments, tool results, model output,
+predictions, debrief text, private gold, or hidden audit content.
 
 Each successful solver attempt must submit a structured debrief after it locks
 all predictions. The debrief must contain one record for each item. Each record

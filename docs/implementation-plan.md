@@ -2,7 +2,7 @@
 
 This plan closes each gap in the [implementation status](implementation-status.md).
 It started from BBA version `0.7.0` and protocol `bba.epoch.v3`.
-The completed work now uses protocol `bba.epoch.v7` and its evidence schema.
+The completed work now uses protocol `bba.epoch.v8` and its evidence schema.
 BBA does not convert an older epoch to version 7.
 
 The protocol specification remains the normative source.

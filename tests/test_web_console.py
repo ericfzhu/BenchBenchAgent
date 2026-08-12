@@ -137,6 +137,41 @@ class FakeConsole:
             }}},
         }
 
+    def observability(self, epoch_id):
+        return {
+            "epoch_id": epoch_id,
+            "active": 0,
+            "failures": 0,
+            "totals": {
+                "invocations": 2,
+                "model_calls": 5,
+                "tool_calls": 4,
+                "total_tokens": 123,
+                "prompt_tokens": 80,
+                "output_tokens": 43,
+                "duration_ms": 2500.0,
+            },
+            "models": [{
+                "identity": "creator-one",
+                "invocations": 2,
+                "failures": 0,
+                "model_calls": 5,
+                "tool_calls": 4,
+                "total_tokens": 123,
+                "duration_ms": 2500.0,
+            }],
+            "recent": [{
+                "status": "success",
+                "role": "creator",
+                "identity": "creator-one",
+                "model_calls": 3,
+                "tool_calls": 2,
+                "total_tokens": 70,
+                "duration_ms": 1500.0,
+                "error_type": None,
+            }],
+        }
+
 
 class TestWebConsole(unittest.TestCase):
     def setUp(self):
@@ -170,6 +205,12 @@ class TestWebConsole(unittest.TestCase):
         self.assertIn("Spearman agreement", rankings.text)
         self.assertIn("Creator-by-solver matrix", rankings.text)
 
+        activity = self.client.get("/epochs/epoch-one/observability")
+        self.assertEqual(activity.status_code, 200)
+        self.assertIn("Google ADK observability", activity.text)
+        self.assertIn("Recent ADK invocations", activity.text)
+        self.assertIn("123", activity.text)
+
     def test_post_requires_csrf_confirmation_and_same_origin(self):
         missing = self.client.post(
             "/epochs/epoch-one/actions/run",
@@ -194,6 +235,11 @@ class TestWebConsole(unittest.TestCase):
         args = build_parser().parse_args(["web", "--port", "9999"])
         self.assertEqual(args.port, 9999)
         self.assertEqual(args.evidence_root, ".bba")
+        observed = build_parser().parse_args([
+            "epoch", "observability", "--epoch-id", "epoch-one", "--recent", "7"
+        ])
+        self.assertEqual(observed.epoch_id, "epoch-one")
+        self.assertEqual(observed.recent, 7)
 
     def test_job_queue_serializes_mutations(self):
         queue = OperatorJobQueue()

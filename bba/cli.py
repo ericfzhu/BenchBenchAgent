@@ -16,6 +16,7 @@ from bba.evidence import EvidenceStore, read_json, tree_digest
 from bba.epoch_setup import create_experiment_manifest, new_epoch_id
 from bba.gcp import discover_gcp_project
 from bba.holdouts import HoldoutRegistry
+from bba.observability import LocalObservabilityStore
 from bba.protocol import (
     PromotionDecision,
     ReviewFindings,
@@ -112,6 +113,7 @@ def _saved_status(
         "promotions": len(list((root / "promotions").glob("*.json"))),
         "public_closed": (root / "evaluation" / "public.json").is_file(),
         "holdout_complete": (root / "audit" / "holdout.json").is_file(),
+        "observability": LocalObservabilityStore(evidence.root).summary(epoch_id),
     })
     return result
 
@@ -161,6 +163,7 @@ def _epoch_run(args: argparse.Namespace) -> int:
         state = _state(evidence)
         state.register_epoch(manifest)
         state.recover_interrupted(args.epoch_id)
+        LocalObservabilityStore(evidence.root).recover_interrupted(args.epoch_id)
         restored = TournamentController(manifest, evidence, state=state)
         if restored.epoch_status()["phase"] in {
             "awaiting_review",
@@ -180,6 +183,7 @@ def _epoch_run(args: argparse.Namespace) -> int:
         creators, solvers = build_adk_backends(
             manifest,
             construction_sandbox=sandbox,
+            observability_store=LocalObservabilityStore(evidence.root),
         )
         validator = PackageValidator(
             sandbox,
@@ -205,6 +209,7 @@ def _epoch_run(args: argparse.Namespace) -> int:
 def _epoch_preflight(args: argparse.Namespace) -> int:
     evidence = _evidence(args)
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
+        LocalObservabilityStore(evidence.root).recover_interrupted(args.epoch_id)
         manifest = evidence.load_manifest(args.epoch_id)
         _print_json({
             "estimate": estimate_epoch(manifest),
@@ -218,6 +223,17 @@ def _epoch_status(args: argparse.Namespace) -> int:
     evidence = _evidence(args)
     evidence.load_manifest(args.epoch_id)
     _print_json(_saved_status(evidence, args.epoch_id, _state(evidence)))
+    return 0
+
+
+def _epoch_observability(args: argparse.Namespace) -> int:
+    evidence = _evidence(args)
+    evidence.load_manifest(args.epoch_id)
+    _print_json(
+        LocalObservabilityStore(evidence.root).summary(
+            args.epoch_id, recent_limit=args.recent
+        )
+    )
     return 0
 
 
@@ -354,6 +370,7 @@ def _epoch_close(args: argparse.Namespace) -> int:
 def _epoch_audit(args: argparse.Namespace) -> int:
     evidence = _evidence(args)
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
+        LocalObservabilityStore(evidence.root).recover_interrupted(args.epoch_id)
         controller = _load_controller(evidence, args.epoch_id, _state(evidence))
         private = read_json(
             evidence.epoch_root(args.epoch_id) / "private" / "holdout-plan.json"
@@ -368,7 +385,9 @@ def _epoch_audit(args: argparse.Namespace) -> int:
             sample_count=controller.manifest.thresholds.sample_count,
         )
         hidden = build_hidden_solver_backends(
-            controller.manifest, private["hidden_solver_panel"]
+            controller.manifest,
+            private["hidden_solver_panel"],
+            observability_store=LocalObservabilityStore(evidence.root),
         )
         _print_json(SealedAuditRunner(controller, validator, hidden).run())
     return 0
@@ -415,6 +434,19 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
     status = epoch_commands.add_parser("status", help="show saved local progress")
     _add_epoch_id(status)
     status.set_defaults(handler=_epoch_status)
+
+    observability = epoch_commands.add_parser(
+        "observability",
+        help="show redacted local ADK health, use, and latency",
+    )
+    _add_epoch_id(observability)
+    observability.add_argument(
+        "--recent",
+        type=int,
+        default=20,
+        help="number of recent invocations to show (default: 20)",
+    )
+    observability.set_defaults(handler=_epoch_observability)
 
     candidates = epoch_commands.add_parser(
         "candidates", help="list saved candidate snapshots"

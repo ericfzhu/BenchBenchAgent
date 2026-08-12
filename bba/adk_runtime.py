@@ -14,6 +14,7 @@ import json
 import re
 import shutil
 import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -28,10 +29,12 @@ from google.adk.models import BaseLlm
 from google.adk.models.registry import LLMRegistry
 from google.adk.plugins import BasePlugin
 from google.adk.sessions import InMemorySessionService
+from google.adk.telemetry import ContentCapturingMode, TelemetryConfig
 from google.genai import types
 
 from bba.errors import PredictionParseFailure, ProviderFailure, SolverTimedOut
 from bba.gcp import configure_gcp_environment
+from bba.observability import LocalObservabilityStore
 from bba.protocol import (
     ExperimentManifest,
     ModelIdentity,
@@ -119,25 +122,104 @@ class AdkInvocationTrace:
     finished_at: str
     status: str
     behavior_settings: Mapping[str, Any]
+    duration_ms: float
+    model_duration_ms: float
+    tool_duration_ms: float
+    model_errors: int
+    tool_errors: int
     error: Optional[str] = None
 
 
-class _EvidencePlugin(BasePlugin):
-    """Capture hashes and usage without retaining prompts or tool arguments."""
+class _ObservabilityPlugin(BasePlugin):
+    """Apply budgets and capture redacted ADK lifecycle telemetry."""
 
-    def __init__(self, token_budget: int, behavior_settings: Mapping[str, Any]) -> None:
-        super().__init__(name=f"bba-evidence-{uuid4().hex}")
+    def __init__(
+        self,
+        token_budget: int,
+        behavior_settings: Mapping[str, Any],
+        *,
+        epoch_id: str,
+        role: str,
+        identity: ModelIdentity,
+        session_id: str,
+        invocation_id: str,
+        store: Optional[LocalObservabilityStore],
+    ) -> None:
+        super().__init__(name=f"bba-observability-{uuid4().hex}")
         self.token_budget = token_budget
         self.behavior_settings = dict(behavior_settings)
+        self.epoch_id = epoch_id
+        self.role = role
+        self.identity = identity
+        self.session_id = session_id
+        self.invocation_id = invocation_id
+        self.store = store
+        self.observation_id = uuid4().hex
+        self.started_at = _utc_now()
+        self.started_ns = time.monotonic_ns()
         self.model_calls = 0
         self.usage_reports = 0
-        self.tool_calls = []
-        self.event_digests = []
+        self.tool_calls: list[str] = []
+        self.event_digests: list[str] = []
         self.final_response_digest = None
         self.prompt_tokens = 0
         self.output_tokens = 0
         self.total_tokens = 0
-        self.response_model_versions = []
+        self.response_model_versions: list[str] = []
+        self.model_duration_ms = 0.0
+        self.tool_duration_ms = 0.0
+        self.model_errors = 0
+        self.tool_errors = 0
+        self._model_started_ns: list[int] = []
+        self._tool_started_ns: dict[str, list[int]] = {}
+
+    def _record(self, status: str, error_type: Optional[str] = None) -> None:
+        if self.store is None:
+            return
+        self.store.update({
+            "schema_version": 1,
+            "observation_id": self.observation_id,
+            "epoch_id": self.epoch_id,
+            "role": self.role,
+            "identity": to_primitive(self.identity),
+            "session_id": self.session_id,
+            "invocation_id": self.invocation_id,
+            "adk_version": ADK_VERSION,
+            "status": status,
+            "started_at": self.started_at,
+            "duration_ms": round((time.monotonic_ns() - self.started_ns) / 1_000_000, 3),
+            "model_calls": self.model_calls,
+            "tool_call_count": len(self.tool_calls),
+            "tool_calls": tuple(self.tool_calls),
+            "event_count": len(self.event_digests),
+            "prompt_tokens": self.prompt_tokens,
+            "output_tokens": self.output_tokens,
+            "total_tokens": self.total_tokens,
+            "usage_metadata_complete": self.usage_reports == self.model_calls,
+            "model_duration_ms": round(self.model_duration_ms, 3),
+            "tool_duration_ms": round(self.tool_duration_ms, 3),
+            "model_errors": self.model_errors,
+            "tool_errors": self.tool_errors,
+            "error_type": error_type,
+            "content_captured": False,
+        })
+
+    def finish(self, status: str, error: Optional[BaseException]) -> None:
+        finished_ns = time.monotonic_ns()
+        while self._model_started_ns:
+            self.model_duration_ms += (
+                finished_ns - self._model_started_ns.pop()
+            ) / 1_000_000
+        for started_values in self._tool_started_ns.values():
+            while started_values:
+                self.tool_duration_ms += (
+                    finished_ns - started_values.pop()
+                ) / 1_000_000
+        self._record(status, type(error).__name__ if error is not None else None)
+
+    async def before_run_callback(self, *, invocation_context):
+        self._record("running")
+        return None
 
     async def before_model_callback(self, *, callback_context, llm_request):
         remaining = self.token_budget - self.total_tokens
@@ -153,9 +235,14 @@ class _EvidencePlugin(BasePlugin):
             if value is not None:
                 setattr(llm_request.config, name, value)
         self.model_calls += 1
+        self._model_started_ns.append(time.monotonic_ns())
         return None
 
     async def after_model_callback(self, *, callback_context, llm_response):
+        if self._model_started_ns:
+            self.model_duration_ms += (
+                time.monotonic_ns() - self._model_started_ns.pop()
+            ) / 1_000_000
         if llm_response.model_version:
             self.response_model_versions.append(str(llm_response.model_version))
         usage = llm_response.usage_metadata
@@ -168,8 +255,31 @@ class _EvidencePlugin(BasePlugin):
                 raise RuntimeError("frozen ADK token budget exceeded")
         return None
 
+    async def on_model_error_callback(self, *, callback_context, llm_request, error):
+        if self._model_started_ns:
+            self.model_duration_ms += (
+                time.monotonic_ns() - self._model_started_ns.pop()
+            ) / 1_000_000
+        self.model_errors += 1
+        return None
+
     async def before_tool_callback(self, *, tool, tool_args, tool_context):
         self.tool_calls.append(tool.name)
+        self._tool_started_ns.setdefault(tool.name, []).append(time.monotonic_ns())
+        return None
+
+    def _finish_tool(self, name: str) -> None:
+        started = self._tool_started_ns.get(name, [])
+        if started:
+            self.tool_duration_ms += (time.monotonic_ns() - started.pop()) / 1_000_000
+
+    async def after_tool_callback(self, *, tool, tool_args, tool_context, result):
+        self._finish_tool(tool.name)
+        return None
+
+    async def on_tool_error_callback(self, *, tool, tool_args, tool_context, error):
+        self._finish_tool(tool.name)
+        self.tool_errors += 1
         return None
 
     async def on_event_callback(self, *, invocation_context, event):
@@ -178,6 +288,9 @@ class _EvidencePlugin(BasePlugin):
         self.event_digests.append(event_digest)
         if event.is_final_response():
             self.final_response_digest = event_digest
+        return None
+
+    async def on_run_error_callback(self, *, invocation_context, error):
         return None
 
 
@@ -220,6 +333,22 @@ def _session_token(payload: Mapping[str, Any]) -> str:
     return digest_json(payload)[:24]
 
 
+def _private_telemetry_config() -> TelemetryConfig:
+    """Return ADK telemetry settings that cannot record message content."""
+
+    config = TelemetryConfig(
+        genai_semconv_stability_opt_in="stable",
+        capture_message_content=ContentCapturingMode.NO_CONTENT,
+    )
+    if (
+        config.should_add_content_to_logs
+        or config.should_add_content_to_experimental_spans
+        or config.should_add_content_to_legacy_spans
+    ):
+        raise RuntimeError("ADK message-content telemetry must remain disabled")
+    return config
+
+
 async def _run_agent(
     *,
     agent: Agent,
@@ -231,12 +360,23 @@ async def _run_agent(
     token_budget: int,
     session_token: str,
     trace_callback: Callable[[AdkInvocationTrace], None],
+    epoch_id: str,
+    observability_store: Optional[LocalObservabilityStore],
 ) -> None:
     app_name = f"bba_{role}"
     session_id = f"{role}-{session_token}"
     invocation_id = f"inv-{session_token}"
     user_id = identity.artifact_id
-    plugin = _EvidencePlugin(token_budget, identity.behavior_settings)
+    plugin = _ObservabilityPlugin(
+        token_budget,
+        identity.behavior_settings,
+        epoch_id=epoch_id,
+        role=role,
+        identity=identity,
+        session_id=session_id,
+        invocation_id=invocation_id,
+        store=observability_store,
+    )
     session_service = InMemorySessionService()
     await session_service.create_session(
         app_name=app_name,
@@ -258,17 +398,28 @@ async def _run_agent(
             session_id=session_id,
             invocation_id=invocation_id,
             new_message=new_message,
-            run_config=RunConfig(max_llm_calls=max_llm_calls),
+            run_config=RunConfig(
+                max_llm_calls=max_llm_calls,
+                custom_metadata={
+                    "bba.epoch_id": epoch_id,
+                    "bba.role": role,
+                    "bba.identity": identity.artifact_id,
+                },
+                telemetry=_private_telemetry_config(),
+            ),
         ):
             pass
 
+    caught: Optional[BaseException] = None
     try:
         await asyncio.wait_for(consume_events(), timeout=timeout_seconds)
     except asyncio.TimeoutError as exc:
+        caught = exc
         status = "timeout"
         error = f"ADK {role} invocation exceeded {timeout_seconds} seconds"
         raise exc
     except Exception as exc:
+        caught = exc
         status = "provider_error"
         error = f"{type(exc).__name__}: {exc}"
         raise
@@ -276,8 +427,10 @@ async def _run_agent(
         try:
             await runner.close()
         finally:
+            plugin.finish(status, caught)
+            finished_at = _utc_now()
             trace_callback(AdkInvocationTrace(
-                schema_version=1,
+                schema_version=2,
                 adk_version=ADK_VERSION,
                 role=role,
                 identity=identity,
@@ -293,17 +446,27 @@ async def _run_agent(
                 response_model_versions=tuple(plugin.response_model_versions),
                 usage_metadata_complete=plugin.usage_reports == plugin.model_calls,
                 started_at=started_at,
-                finished_at=_utc_now(),
+                finished_at=finished_at,
                 status=status,
                 behavior_settings=dict(identity.behavior_settings),
+                duration_ms=round((time.monotonic_ns() - plugin.started_ns) / 1_000_000, 3),
+                model_duration_ms=round(plugin.model_duration_ms, 3),
+                tool_duration_ms=round(plugin.tool_duration_ms, 3),
+                model_errors=plugin.model_errors,
+                tool_errors=plugin.tool_errors,
                 error=error,
             ))
 
 
 class _TraceBackend:
-    def __init__(self, require_usage_metadata: bool) -> None:
+    def __init__(
+        self,
+        require_usage_metadata: bool,
+        observability_store: Optional[LocalObservabilityStore],
+    ) -> None:
         self._last_trace: Optional[AdkInvocationTrace] = None
         self._require_usage_metadata = require_usage_metadata
+        self._observability_store = observability_store
 
     def _save_trace(self, trace: AdkInvocationTrace) -> None:
         self._last_trace = trace
@@ -336,8 +499,9 @@ class AdkCreatorBackend(_TraceBackend):
         max_files: int = 512,
         max_bytes: int = 16 * 1024 * 1024,
         require_usage_metadata: bool = True,
+        observability_store: Optional[LocalObservabilityStore] = None,
     ) -> None:
-        super().__init__(require_usage_metadata)
+        super().__init__(require_usage_metadata, observability_store)
         self.model = model
         self.instruction = instruction
         self.prompt_digest = digest_json(instruction)
@@ -506,6 +670,8 @@ class AdkCreatorBackend(_TraceBackend):
                 token_budget=manifest.budget.max_tokens,
                 session_token=token,
                 trace_callback=self._save_trace,
+                epoch_id=manifest.epoch_id,
+                observability_store=self._observability_store,
             ))
         except asyncio.TimeoutError as exc:
             raise ProviderFailure(str(exc) or "creator invocation timed out") from exc
@@ -525,8 +691,9 @@ class AdkSolverBackend(_TraceBackend):
         *,
         instruction: str = SOLVER_INSTRUCTION,
         require_usage_metadata: bool = True,
+        observability_store: Optional[LocalObservabilityStore] = None,
     ) -> None:
-        super().__init__(require_usage_metadata)
+        super().__init__(require_usage_metadata, observability_store)
         self.model = model
         self.instruction = instruction
         self.prompt_digest = digest_json(instruction)
@@ -686,6 +853,8 @@ class AdkSolverBackend(_TraceBackend):
                 token_budget=manifest.budget.max_tokens,
                 session_token=token,
                 trace_callback=self._save_trace,
+                epoch_id=manifest.epoch_id,
+                observability_store=self._observability_store,
             ))
         except asyncio.TimeoutError as exc:
             raise SolverTimedOut(
@@ -718,6 +887,7 @@ def build_adk_backends(
     construction_sandbox: Optional[SecureSandbox] = None,
     creator_instruction: str = CREATOR_INSTRUCTION,
     solver_instruction: str = SOLVER_INSTRUCTION,
+    observability_store: Optional[LocalObservabilityStore] = None,
 ) -> Tuple[Mapping[str, AdkCreatorBackend], Mapping[str, AdkSolverBackend]]:
     """Build the exact creator and solver backend maps required by a controller."""
     configure_gcp_environment(manifest)
@@ -732,10 +902,12 @@ def build_adk_backends(
             model,
             instruction=creator_instruction,
             construction_sandbox=sandbox,
+            observability_store=observability_store,
         )
         solvers[identity.artifact_id] = AdkSolverBackend(
             model,
             instruction=solver_instruction,
+            observability_store=observability_store,
         )
     return creators, solvers
 
@@ -743,6 +915,8 @@ def build_adk_backends(
 def build_hidden_solver_backends(
     manifest: ExperimentManifest,
     hidden_panel: Mapping[str, Any],
+    *,
+    observability_store: Optional[LocalObservabilityStore] = None,
 ) -> Mapping[str, AdkSolverBackend]:
     """Build the committed sealed-scaffold panel after public closure."""
 
@@ -762,6 +936,8 @@ def build_hidden_solver_backends(
         if identity.artifact_id in public:
             raise ValueError("hidden solver identity is not distinct from the public panel")
         result[identity.artifact_id] = AdkSolverBackend(
-            resolve_model(identity), instruction=instruction
+            resolve_model(identity),
+            instruction=instruction,
+            observability_store=observability_store,
         )
     return result

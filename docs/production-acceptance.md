@@ -7,8 +7,8 @@ Do not mark an item complete without the named evidence file.
 
 | Field | Value |
 | --- | --- |
-| BBA version | `0.12.0` |
-| Protocol | `bba.epoch.v7` |
+| BBA version | `0.13.0` |
+| Protocol | `bba.epoch.v8` |
 | Git commit | Not run |
 | Epoch ID | Not run |
 | Google Cloud project | Not run |

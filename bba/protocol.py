@@ -11,7 +11,7 @@ from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional
 
 
-PROTOCOL_VERSION = "bba.epoch.v7"
+PROTOCOL_VERSION = "bba.epoch.v8"
 SCHEMA_VERSION = 7
 
 

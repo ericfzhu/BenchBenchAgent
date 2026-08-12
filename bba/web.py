@@ -280,9 +280,30 @@ def create_app(console: OperatorConsole) -> FastAPI:
         m = value["manifest"]
         body = f"""<div class="breadcrumb"><a href="/">Epochs</a> / {_e(epoch_id)}</div><div class="page-head"><div><div class="eyebrow">{_e(m['catalog_version'])}</div><h1>{_e(epoch_id)}</h1><p class="subtitle">Created {_e(m['created_at'])}. This epoch uses {_e(m['models'])} models, {_e(m['rounds'])} creator rounds, and {_e(m['solver_repetitions'])} solver repetitions.</p></div><div>{_chip(value['phase'])}</div></div>
 <div class="grid"><section class="card span-4"><div class="metric-label">Snapshots</div><div class="metric">{value['snapshots']}</div></section><section class="card span-4"><div class="metric-label">Solver cells</div><div class="metric">{value['solver_cells']}</div></section><section class="card span-4"><div class="metric-label">Approved</div><div class="metric">{value['approved']}</div></section></div>
-<section class="section"><div class="section-head"><h2>Epoch controls</h2><a class="button secondary" href="{_epoch_link(epoch_id)}/results">View rankings</a></div>{'<div class="notice"><strong>An operation is active.</strong> Open the operations page for its status.</div>' if active_job else ''}<div class="grid">{actions}</div></section>
+<section class="section"><div class="section-head"><h2>Epoch controls</h2><div class="button-row"><a class="button secondary" href="{_epoch_link(epoch_id)}/observability">View agent activity</a><a class="button secondary" href="{_epoch_link(epoch_id)}/results">View rankings</a></div></div>{'<div class="notice"><strong>An operation is active.</strong> Open the operations page for its status.</div>' if active_job else ''}<div class="grid">{actions}</div></section>
 <section class="section"><div class="section-head"><h2>Candidate benchmarks</h2><span class="muted">Final-round candidates can receive certificates and signed decisions.</span></div><div class="table-wrap"><table><thead><tr><th>Candidate</th><th class="num">Round</th><th>Status</th><th class="num">Cells</th><th class="num">Best solver</th><th class="num">Certificates</th></tr></thead><tbody>{candidate_rows}</tbody></table></div></section>"""
         return _layout(epoch_id, body)
+
+    @app.get("/epochs/{epoch_id}/observability", response_class=HTMLResponse)
+    def observability(epoch_id: str):
+        try:
+            value = console.observability(epoch_id)
+        except Exception as exc:
+            return fail("Could not read agent activity", str(exc), 404)
+        totals = value["totals"]
+        model_rows = "".join(
+            f'<tr><td>{_e(row["identity"])}</td><td class="num">{row["invocations"]}</td><td class="num">{row["failures"]}</td><td class="num">{row["model_calls"]}</td><td class="num">{row["tool_calls"]}</td><td class="num">{row["total_tokens"]}</td><td class="num">{row["duration_ms"]:.0f} ms</td></tr>'
+            for row in value["models"]
+        ) or '<tr><td class="empty" colspan="7">No ADK invocation has started.</td></tr>'
+        recent_rows = "".join(
+            f'<tr><td>{_chip(row["status"])}</td><td>{_e(row["role"] or "—")}</td><td>{_e(row["identity"])}</td><td class="num">{row["model_calls"]}</td><td class="num">{row["tool_calls"]}</td><td class="num">{row["total_tokens"]}</td><td class="num">{row["duration_ms"]:.0f} ms</td><td>{_e(row["error_type"] or "—")}</td></tr>'
+            for row in value["recent"]
+        ) or '<tr><td class="empty" colspan="8">No ADK invocation has started.</td></tr>'
+        body = f"""<div class="breadcrumb"><a href="{_epoch_link(epoch_id)}">{_e(epoch_id)}</a> / Agent activity</div><div class="page-head"><div><div class="eyebrow">Google ADK observability</div><h1>Agent activity</h1><p class="subtitle">BBA records ADK lifecycle, usage, latency, and error metadata. It does not record prompts, tool arguments, tool results, model output, or hidden audit content.</p></div>{_chip('running' if value['active'] else 'observed')}</div>
+<div class="grid"><section class="card span-4"><div class="metric-label">Invocations</div><div class="metric">{totals['invocations']}</div></section><section class="card span-4"><div class="metric-label">Model calls</div><div class="metric">{totals['model_calls']}</div></section><section class="card span-4"><div class="metric-label">Total tokens</div><div class="metric">{totals['total_tokens']}</div></section></div>
+<section class="section"><div class="section-head"><h2>Models</h2><span class="muted">Cumulative values for this epoch</span></div><div class="table-wrap"><table><thead><tr><th>Identity</th><th class="num">Runs</th><th class="num">Failures</th><th class="num">Model calls</th><th class="num">Tool calls</th><th class="num">Tokens</th><th class="num">Time</th></tr></thead><tbody>{model_rows}</tbody></table></div></section>
+<section class="section"><div class="section-head"><h2>Recent ADK invocations</h2><span class="muted">Refresh this page to read the latest local records.</span></div><div class="table-wrap"><table><thead><tr><th>Status</th><th>Role</th><th>Identity</th><th class="num">Model calls</th><th class="num">Tools</th><th class="num">Tokens</th><th class="num">Time</th><th>Error type</th></tr></thead><tbody>{recent_rows}</tbody></table></div></section>"""
+        return _layout("Agent activity", body)
 
     @app.post("/epochs/{epoch_id}/actions/{action}")
     def epoch_action(request: Request, epoch_id: str, action: str, csrf_token: str = Form(...), confirmed: str = Form("")):

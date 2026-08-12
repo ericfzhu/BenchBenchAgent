@@ -501,6 +501,8 @@ epochs/
     validations/
     solver-cells/
     agent-traces/
+    observability/
+      invocations/
     solvability-certificates/
     promotions/
     evaluation/
@@ -516,7 +518,33 @@ Protect the evidence root because it contains sealed holdout material.
 Back up the complete directory after epoch creation, each public run, and each audit.
 Exclude `private/` when you publish public evidence.
 
-## 18. Failure response
+## 18. Observe ADK agent work
+
+BBA uses a Google ADK plugin to observe each creator and solver invocation.
+The plugin records call counts, tool names, token use, elapsed time, model
+versions, status, and error types. BBA saves the records in the local evidence
+root.
+
+Show the epoch summary:
+
+```bash
+.venv/bin/bba epoch observability \
+  --epoch-id EPOCH_ID \
+  --evidence-root .bba
+```
+
+Open the epoch in the localhost console and select **View agent activity** to
+see the same data.
+
+BBA tells ADK to capture no message content. Do not change this setting for a
+production epoch. The observability files must not contain prompts, tool
+arguments, tool results, model output, predictions, debrief text, private gold,
+or hidden audit content.
+
+If the local controller stops during an invocation, the next preflight, public
+run, or audit marks the stale activity record as `interrupted`.
+
+## 19. Failure response
 
 Use these rules after a failure:
 
@@ -529,7 +557,7 @@ Use these rules after a failure:
 - Do not reveal hidden evidence before public closure.
 - Do not reuse revealed holdout material in another epoch.
 
-## 19. Cost controls
+## 20. Cost controls
 
 BBA uses serverless model inference.
 It has no persistent model-serving charge.

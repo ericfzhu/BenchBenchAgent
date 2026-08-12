@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from bba.evidence import EvidenceStore, read_json
+from bba.observability import LocalObservabilityStore
 from bba.protocol import (
     CandidateStatus,
     PromotionDecision,
@@ -126,6 +127,7 @@ class OperatorConsole:
     def __init__(self, evidence_root: Path, jobs: Optional[OperatorJobQueue] = None):
         self.evidence = EvidenceStore(evidence_root)
         self.state = LocalStateStore(self.evidence.root / "bba-state.sqlite3")
+        self.observability_store = LocalObservabilityStore(self.evidence.root)
         self.jobs = jobs or OperatorJobQueue()
         self._process_lock = threading.Lock()
         self._active_process: Optional[subprocess.Popen[bytes]] = None
@@ -158,6 +160,7 @@ class OperatorConsole:
             "promotions": len(list((root / "promotions").glob("*.json"))),
             "public_closed": (root / "evaluation" / "public.json").is_file(),
             "holdout_complete": (root / "audit" / "holdout.json").is_file(),
+            "observability": self.observability_store.summary(epoch_id),
         })
         return result
 
@@ -270,6 +273,11 @@ class OperatorConsole:
             "public": read_json(public_path) if public_path.is_file() else None,
             "audit": read_json(audit_path) if audit_path.is_file() else None,
         }
+
+    def observability(self, epoch_id: str) -> dict[str, Any]:
+        epoch_id = self.validate_epoch_id(epoch_id)
+        self.evidence.load_manifest(epoch_id)
+        return self.observability_store.summary(epoch_id)
 
     def _run_cli(self, arguments: Sequence[str]) -> str:
         with tempfile.TemporaryFile() as output:

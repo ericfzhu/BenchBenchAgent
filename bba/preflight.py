@@ -8,6 +8,7 @@ from typing import Any, Dict, Mapping
 
 from bba.adk_runtime import AdkSolverBackend, build_adk_backends
 from bba.evidence import EvidenceStore
+from bba.observability import LocalObservabilityStore
 from bba.protocol import ExperimentManifest, to_primitive
 from bba.runtime import SecureSandbox
 
@@ -26,7 +27,9 @@ def run_preflight(
             cpu_seconds=manifest.budget.cpu_seconds,
         )
         _creators, solver_backends = build_adk_backends(
-            manifest, construction_sandbox=sandbox
+            manifest,
+            construction_sandbox=sandbox,
+            observability_store=LocalObservabilityStore(evidence.root),
         )
     results = []
     for identity in manifest.cohort:
