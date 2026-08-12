@@ -3,6 +3,7 @@
 This document records the known incomplete work in BBA.
 It applies to BBA version `0.7.0` and protocol `bba.epoch.v3`.
 The [protocol specification](protocol.md) remains the normative source.
+The [completion plan](implementation-plan.md) gives the implementation order and required tests.
 
 ## Current working scope
 

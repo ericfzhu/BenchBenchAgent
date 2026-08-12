@@ -177,6 +177,7 @@ A timeout or provider error is not a zero score.
 - [Protocol specification](docs/protocol.md): Required rules for one epoch.
 - [Operations guide](docs/operations.md): Local setup, commands, recovery, review, and audit.
 - [Implementation status](docs/implementation-status.md): Known incomplete work and completion conditions.
+- [Completion plan](docs/implementation-plan.md): Work order, protocol decisions, tests, and exit gates.
 
 ## Main Python interfaces
 
