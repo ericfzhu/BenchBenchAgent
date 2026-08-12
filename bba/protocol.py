@@ -176,6 +176,7 @@ class ExperimentManifest:
     creator_prompt_digest: str
     solver_prompt_digest: str
     evaluator_version: str
+    evaluator_components: Mapping[str, Any] = field(default_factory=dict)
     thresholds: DecisionThresholds = field(default_factory=DecisionThresholds)
     budget: ResourceBudget = field(default_factory=ResourceBudget)
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
@@ -208,6 +209,10 @@ class ExperimentManifest:
             raise ValueError(f"hidden commitments must be exactly {sorted(required)}")
         if any(not re.fullmatch(r"[0-9a-f]{64}", value) for value in self.hidden_commitments.values()):
             raise ValueError("hidden commitments must be lowercase SHA-256 digests")
+        if not re.fullmatch(r"[0-9a-f]{64}", self.evaluator_version):
+            raise ValueError("evaluator version must be its lowercase SHA-256 root digest")
+        if self.evaluator_components and self.evaluator_components.get("root_digest") != self.evaluator_version:
+            raise ValueError("evaluator component identity does not match its root digest")
 
     @property
     def digest(self) -> str:

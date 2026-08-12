@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from bba.adk_runtime import CREATOR_INSTRUCTION, SOLVER_INSTRUCTION
-from bba.catalog import CATALOG_VERSION, GCP_LOCATION, SERVERLESS_COHORT
+from bba.catalog import CATALOG_DIGEST, CATALOG_VERSION, GCP_LOCATION, SERVERLESS_COHORT
+from bba.evaluator_identity import build_evaluator_identity
 from bba.protocol import ExperimentManifest, digest_json, to_primitive
 
 
@@ -54,6 +55,11 @@ def create_experiment_manifest(
         name: digest_json(hidden[name])
         for name in ("hidden_solver_panel", "hidden_seeds", "audit_policy")
     }
+    creator_prompt_digest = digest_json(CREATOR_INSTRUCTION)
+    solver_prompt_digest = digest_json(SOLVER_INSTRUCTION)
+    evaluator = build_evaluator_identity(
+        creator_prompt_digest, solver_prompt_digest, CATALOG_DIGEST
+    )
     manifest = ExperimentManifest(
         epoch_id=identifier,
         cohort=SERVERLESS_COHORT,
@@ -61,8 +67,9 @@ def create_experiment_manifest(
         gcp_project=project,
         gcp_location=GCP_LOCATION,
         hidden_commitments=commitments,
-        creator_prompt_digest=digest_json(CREATOR_INSTRUCTION),
-        solver_prompt_digest=digest_json(SOLVER_INSTRUCTION),
-        evaluator_version="bba-public-evaluator-v1",
+        creator_prompt_digest=creator_prompt_digest,
+        solver_prompt_digest=solver_prompt_digest,
+        evaluator_version=evaluator["root_digest"],
+        evaluator_components=evaluator,
     )
     return manifest, hidden

@@ -12,6 +12,8 @@ from bba.catalog import CATALOG_VERSION, GCP_LOCATION, SERVERLESS_COHORT
 from bba.damage import create_damage_variants
 from bba.dependencies import LocalWheelCatalog, build_dependency_environment, parse_lockfile
 from bba.evidence import EvidenceStore, tree_digest
+from bba.evaluator_identity import build_evaluator_identity
+from bba.holdouts import HoldoutRegistry
 from bba.protocol import (
     AuditStatus,
     CellState,
@@ -61,7 +63,7 @@ def manifest(epoch_id="protocol-test"):
         hidden_commitments={key: digest_json(value) for key, value in hidden.items()},
         creator_prompt_digest="creator-prompt",
         solver_prompt_digest="solver-prompt",
-        evaluator_version="public-evaluator-v1",
+        evaluator_version="a" * 64,
         sandbox=SandboxCapabilities(backend="trusted-fixture-only"),
     )
 
@@ -85,7 +87,7 @@ class TestEndStateProtocol(unittest.TestCase):
                 hidden_commitments={key: "a" * 64 for key in ("hidden_solver_panel", "hidden_seeds", "audit_policy")},
                 creator_prompt_digest="d",
                 solver_prompt_digest="e",
-                evaluator_version="v1",
+                evaluator_version="b" * 64,
                 sandbox=SandboxCapabilities(backend="trusted-fixture-only"),
             )
 
@@ -145,13 +147,30 @@ class TestEndStateProtocol(unittest.TestCase):
             original = path.read_bytes()
             self.assertEqual(store.freeze_manifest(manifest()), path)
             with self.assertRaises(ValueError):
-                store.freeze_manifest(replace(manifest(), evaluator_version="different"))
+                store.freeze_manifest(replace(manifest(), evaluator_version="c" * 64))
             self.assertEqual(path.read_bytes(), original)
             first = store.append_registry_record("history", {"status": "first"})
             second = store.append_registry_record("history", {"status": "second"})
             second_data = json.loads(second.read_text(encoding="utf-8"))
             from bba.evidence import file_digest
             self.assertEqual(second_data["previous_record_digest"], file_digest(first))
+
+    def test_evaluator_identity_and_holdout_retirement_are_bound(self):
+        first_identity = build_evaluator_identity("creator-a", "solver-a", "catalog-a")
+        second_identity = build_evaluator_identity("creator-b", "solver-a", "catalog-a")
+        self.assertNotEqual(first_identity["root_digest"], second_identity["root_digest"])
+        with tempfile.TemporaryDirectory() as temporary:
+            store = EvidenceStore(Path(temporary))
+            registry = HoldoutRegistry(store)
+            commitments = manifest().hidden_commitments
+            registry.transition("epoch-a", commitments, "committed")
+            registry.transition("epoch-a", commitments, "opened")
+            registry.transition("epoch-a", commitments, "retired")
+            self.assertEqual(
+                registry.state(registry.commitment_id(commitments)), "retired"
+            )
+            with self.assertRaisesRegex(ValueError, "retired|owned"):
+                registry.transition("epoch-b", commitments, "committed")
 
     def test_fixture_package_passes_and_noop_generator_fails(self):
         sandbox = LocalFixtureSandbox(acknowledge_unsafe=True)

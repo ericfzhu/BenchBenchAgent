@@ -64,7 +64,7 @@ The manifest must contain these items:
 - The Google Cloud project and location
 - The model cohort
 - The creator and solver prompt digests
-- The evaluator version
+- The evaluator root digest and component digests
 - The resource limits
 - The retry policy
 - The decision limits
@@ -82,6 +82,9 @@ The catalog must not contain a deployed endpoint resource or direct HTTP model U
 
 The operator must not supply an epoch manifest.
 The manifest is immutable evidence after BBA creates it.
+
+The evaluator root digest must bind the protocol, controller source, prompt templates, model catalog, scoring rules, validation rules, audit rules, Python runtime, and installed controller dependencies.
+Any bound change must create a new evaluator identity and a new sealed target.
 
 The hidden commitments must contain exactly these names:
 
@@ -413,6 +416,9 @@ If the audit misses one frozen decision limit, the epoch evaluator is `unvalidat
 BBA must keep the public record.
 BBA must retire the revealed holdout.
 BBA must not use that holdout in a later epoch.
+A local append-only registry must record `committed`, `opened`, and `retired` states.
+Epoch creation must reject a commitment that another epoch used.
+Audit execution must reject retired material.
 
 ## 15. Local state and recovery
 

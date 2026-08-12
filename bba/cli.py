@@ -14,6 +14,7 @@ from bba.catalog import catalog_summary
 from bba.evidence import EvidenceStore, read_json, tree_digest
 from bba.epoch_setup import create_experiment_manifest, new_epoch_id
 from bba.gcp import discover_gcp_project
+from bba.holdouts import HoldoutRegistry
 from bba.protocol import (
     PromotionDecision,
     ReviewFindings,
@@ -119,6 +120,9 @@ def _epoch_create(args: argparse.Namespace) -> int:
                 raise RuntimeError(f"epoch setup is incomplete: {epoch_id}")
         else:
             manifest, private = create_experiment_manifest(project, epoch_id=epoch_id)
+            HoldoutRegistry(evidence).transition(
+                epoch_id, manifest.hidden_commitments, "committed"
+            )
             evidence.freeze_epoch_setup(manifest, private)
         controller = TournamentController(manifest, evidence, state=_state(evidence))
         _print_json(controller.epoch_status())

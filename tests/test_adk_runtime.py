@@ -101,7 +101,7 @@ class TestAdkRuntime(unittest.TestCase):
             },
             creator_prompt_digest=digest_json(CREATOR_INSTRUCTION),
             solver_prompt_digest=digest_json(SOLVER_INSTRUCTION),
-            evaluator_version="test",
+            evaluator_version="a" * 64,
         )
 
     def test_exact_stable_adk_release_is_loaded(self):

@@ -53,7 +53,7 @@ class TestEndStateTournament(unittest.TestCase):
             hidden_commitments={key: digest_json(value) for key, value in self.hidden_material.items()},
             creator_prompt_digest="creator-prompt",
             solver_prompt_digest="solver-prompt",
-            evaluator_version="public-evaluator-v1",
+            evaluator_version="a" * 64,
             sandbox=SandboxCapabilities(backend="trusted-fixture-only"),
         )
         creator_biases = (0.20, 0.28, 0.36, 0.50)
