@@ -208,14 +208,24 @@ class PackageValidator:
         self._environment_by_workspace[key] = value
         return value
 
-    def _run_python(self, package: Path, workspace: Path, script: Path, args: List[str], cwd: Path):
+    def run_package_python(
+        self,
+        package: Path,
+        workspace: Path,
+        script: Path,
+        args: List[str],
+        cwd: Path,
+        timeout_seconds: Optional[int] = None,
+    ):
+        """Run package code with its controller-built dependency environment."""
+
         _environment, overrides = self._dependency_environment(package, workspace)
         return self.sandbox.run_python(
             script,
             args,
             workspace=workspace,
             cwd=cwd,
-            timeout_seconds=self.timeout_seconds,
+            timeout_seconds=timeout_seconds or self.timeout_seconds,
             env_overrides=overrides,
         )
 
@@ -224,7 +234,7 @@ class PackageValidator:
         (bundle / "SOLVER_MANIFEST.json").unlink(missing_ok=True)
         (bundle / "items_private_sample.jsonl").unlink(missing_ok=True)
         (package / "gold_private_sample.jsonl").unlink(missing_ok=True)
-        result = self._run_python(
+        result = self.run_package_python(
             package,
             workspace,
             package / "generator.py",
@@ -250,7 +260,7 @@ class PackageValidator:
         return payload_digest(package), gold, items
 
     def _score_controls(self, package: Path, workspace: Path, gold: List[Dict[str, Any]], items: List[Dict[str, Any]]) -> None:
-        verifier = self._run_python(
+        verifier = self.run_package_python(
             package,
             workspace,
             package / "verifier.py",
@@ -268,7 +278,7 @@ class PackageValidator:
         )
         for predictions, expected in ((gold_predictions, self.sample_count), (wrong_predictions, 0)):
             output = package / f".controller_score_{expected}.json"
-            result = self._run_python(
+            result = self.run_package_python(
                 package,
                 workspace,
                 package / "scorer.py",

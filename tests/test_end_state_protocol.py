@@ -9,11 +9,11 @@ from pathlib import Path
 
 from bba.audit import DefectPair, audit_evaluator
 from bba.budget import EpochBudgetLedger, estimate_epoch
-from bba.catalog import CATALOG_VERSION, GCP_LOCATION, SERVERLESS_COHORT
+from bba.catalog import CATALOG_DIGEST, CATALOG_VERSION, GCP_LOCATION, SERVERLESS_COHORT
 from bba.damage import create_damage_variants
 from bba.dependencies import LocalWheelCatalog, build_dependency_environment, parse_lockfile
 from bba.evidence import EvidenceStore, tree_digest
-from bba.evaluator_identity import build_evaluator_identity
+from bba.evaluator_identity import BOUND_MODULES, build_evaluator_identity
 from bba.holdouts import HoldoutRegistry
 from bba.protocol import (
     AuditStatus,
@@ -35,6 +35,7 @@ from bba.scheduler import BoundedScheduler
 from bba.pricing import PriceCatalog
 from tests.fixtures import ExecutableCreatorFixture, LocalFixtureSandbox
 from bba.validator import PackageValidator
+from bba.tournament import TournamentController
 
 
 def cohort():
@@ -59,6 +60,9 @@ def manifest(epoch_id="protocol-test"):
         "hidden_seeds": [991, 997],
         "audit_policy": {"version": "audit-v1"},
     }
+    evaluator = build_evaluator_identity(
+        "creator-prompt", "solver-prompt", CATALOG_DIGEST
+    )
     return ExperimentManifest(
         epoch_id=epoch_id,
         cohort=cohort(),
@@ -68,7 +72,8 @@ def manifest(epoch_id="protocol-test"):
         hidden_commitments={key: digest_json(value) for key, value in hidden.items()},
         creator_prompt_digest="creator-prompt",
         solver_prompt_digest="solver-prompt",
-        evaluator_version="a" * 64,
+        evaluator_version=evaluator["root_digest"],
+        evaluator_components=evaluator,
         sandbox=SandboxCapabilities(backend="trusted-fixture-only"),
     )
 
@@ -93,6 +98,7 @@ class TestEndStateProtocol(unittest.TestCase):
                 creator_prompt_digest="d",
                 solver_prompt_digest="e",
                 evaluator_version="b" * 64,
+                evaluator_components={"root_digest": "b" * 64},
                 sandbox=SandboxCapabilities(backend="trusted-fixture-only"),
             )
 
@@ -139,6 +145,7 @@ class TestEndStateProtocol(unittest.TestCase):
             SolverAttempt(
                 attempt_id="cell--attempt-1",
                 cell_id="cell",
+                instance_id="instance",
                 attempt_index=1,
                 state=CellState.SUCCESS,
                 invocation_digest="invocation",
@@ -180,6 +187,15 @@ class TestEndStateProtocol(unittest.TestCase):
         first_identity = build_evaluator_identity("creator-a", "solver-a", "catalog-a")
         second_identity = build_evaluator_identity("creator-b", "solver-a", "catalog-a")
         self.assertNotEqual(first_identity["root_digest"], second_identity["root_digest"])
+        self.assertTrue({
+            "audit_runner.py",
+            "budget.py",
+            "evidence.py",
+            "evaluator_identity.py",
+            "holdouts.py",
+            "registry.py",
+            "state.py",
+        }.issubset(BOUND_MODULES))
         with tempfile.TemporaryDirectory() as temporary:
             store = EvidenceStore(Path(temporary))
             registry = HoldoutRegistry(store)
@@ -192,6 +208,31 @@ class TestEndStateProtocol(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "retired|owned"):
                 registry.transition("epoch-b", commitments, "committed")
+
+    def test_controller_rejects_an_internally_consistent_stale_evaluator(self):
+        identity = build_evaluator_identity(
+            "creator-prompt", "solver-prompt", CATALOG_DIGEST
+        )
+        bound_manifest = replace(
+            manifest("evaluator-resume"),
+            evaluator_version=identity["root_digest"],
+            evaluator_components=identity,
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            TournamentController(bound_manifest, EvidenceStore(Path(temporary)))
+            stale = dict(identity)
+            stale_components = dict(stale["components"])
+            stale_components["bba/state.py"] = "0" * 64
+            stale["components"] = stale_components
+            stale.pop("root_digest")
+            stale["root_digest"] = digest_json(stale)
+            stale_manifest = replace(
+                bound_manifest,
+                evaluator_version=stale["root_digest"],
+                evaluator_components=stale,
+            )
+            with self.assertRaisesRegex(ValueError, "local evaluator"):
+                TournamentController(stale_manifest, EvidenceStore(Path(temporary)))
 
     def test_fixture_package_passes_and_noop_generator_fails(self):
         sandbox = LocalFixtureSandbox(acknowledge_unsafe=True)

@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Mapping, Optional, Protocol, Sequence
 
 from bba.audit import DefectPair, audit_evaluator
 from bba.errors import PredictionParseFailure, ProviderFailure, SolverTimedOut
+from bba.evaluator_identity import verify_evaluator_identity
 from bba.evidence import EvidenceStore, file_digest, read_json
 from bba.protocol import (
     CandidateSnapshot,
@@ -90,6 +91,7 @@ class TournamentController:
     ):
         self.manifest = manifest
         self.evidence = evidence
+        verify_evaluator_identity(manifest)
         self.validator = validator
         self.creator_backends = dict(creator_backends or {})
         self.solver_backends = dict(solver_backends or {})
@@ -327,6 +329,7 @@ class TournamentController:
                 selected.state != cell.state
                 or selected.score != cell.score
                 or selected.prediction_digest != cell.prediction_digest
+                or selected.debrief_digest != cell.debrief_digest
                 or selected.per_item != cell.per_item
                 or selected.error != cell.error
             ):
@@ -433,11 +436,7 @@ class TournamentController:
 
     def _freeze_round_seed(self, round_index: int) -> int:
         existing = self.round_seeds.get(round_index)
-        if (
-            existing is not None
-            and existing.decision == decision
-            and existing.prior_review_digest == prior_review_digest
-        ):
+        if existing is not None:
             return existing
         round_snapshots = [
             snapshot for snapshot in self.snapshots if snapshot.round_index == round_index
@@ -573,14 +572,15 @@ class TournamentController:
                 shutil.copy2(instance_root / "gold_private_sample.jsonl", score_package)
                 shutil.copy2(prediction_path, score_package / "predictions.jsonl")
                 score_output = score_package / ".controller_solver_score.json"
-                result = self.validator.sandbox.run_python(
+                result = self.validator.run_package_python(
+                    score_package,
+                    score_workspace,
                     score_package / "scorer.py",
                     [
                         "--gold", "gold_private_sample.jsonl",
                         "--predictions", "predictions.jsonl",
                         "--out", score_output.name,
                     ],
-                    workspace=score_workspace,
                     cwd=score_package,
                     timeout_seconds=self.manifest.budget.solver_seconds,
                 )
@@ -638,6 +638,7 @@ class TournamentController:
                 attempt = SolverAttempt(
                     attempt_id=attempt_id,
                     cell_id=cell_id,
+                    instance_id=instance.instance_id,
                     attempt_index=attempt_index,
                     state=CellState.SUCCESS,
                     invocation_digest=invocation_digest,
@@ -680,6 +681,7 @@ class TournamentController:
             attempt = SolverAttempt(
                 attempt_id=attempt_id,
                 cell_id=cell_id,
+                instance_id=instance.instance_id,
                 attempt_index=attempt_index,
                 state=state,
                 invocation_digest=invocation_digest,

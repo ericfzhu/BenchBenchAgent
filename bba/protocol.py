@@ -11,8 +11,8 @@ from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional
 
 
-PROTOCOL_VERSION = "bba.epoch.v5"
-SCHEMA_VERSION = 5
+PROTOCOL_VERSION = "bba.epoch.v6"
+SCHEMA_VERSION = 6
 
 
 class StrEnum(str, Enum):
@@ -190,7 +190,7 @@ class ExperimentManifest:
     creator_prompt_digest: str
     solver_prompt_digest: str
     evaluator_version: str
-    evaluator_components: Mapping[str, Any] = field(default_factory=dict)
+    evaluator_components: Mapping[str, Any]
     thresholds: DecisionThresholds = field(default_factory=DecisionThresholds)
     budget: ResourceBudget = field(default_factory=ResourceBudget)
     retry_policy: RetryPolicy = field(default_factory=RetryPolicy)
@@ -225,7 +225,9 @@ class ExperimentManifest:
             raise ValueError("hidden commitments must be lowercase SHA-256 digests")
         if not re.fullmatch(r"[0-9a-f]{64}", self.evaluator_version):
             raise ValueError("evaluator version must be its lowercase SHA-256 root digest")
-        if self.evaluator_components and self.evaluator_components.get("root_digest") != self.evaluator_version:
+        if not self.evaluator_components:
+            raise ValueError("evaluator component identity is required")
+        if self.evaluator_components.get("root_digest") != self.evaluator_version:
             raise ValueError("evaluator component identity does not match its root digest")
 
     @property
@@ -296,6 +298,7 @@ class SolverDebrief:
 class SolverAttempt:
     attempt_id: str
     cell_id: str
+    instance_id: str
     attempt_index: int
     state: CellState
     invocation_digest: str
@@ -312,7 +315,7 @@ class SolverAttempt:
     def __post_init__(self) -> None:
         if self.attempt_index < 1:
             raise ValueError("solver attempt indexes start at one")
-        if not self.attempt_id or not self.cell_id:
+        if not self.attempt_id or not self.cell_id or not self.instance_id:
             raise ValueError("solver attempt identity cannot be blank")
         if set(self.evidence_files) != set(self.evidence_digests):
             raise ValueError("solver attempt evidence files and digests must match")

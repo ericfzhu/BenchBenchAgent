@@ -1,7 +1,7 @@
 # BBA implementation status
 
 This document records the implementation and verification state.
-It applies to BBA version `0.9.0` and protocol `bba.epoch.v5`.
+It applies to BBA version `0.10.0` and protocol `bba.epoch.v6`.
 The [protocol specification](protocol.md) is the normative source.
 The [completion plan](implementation-plan.md) gives the work order and acceptance gates.
 

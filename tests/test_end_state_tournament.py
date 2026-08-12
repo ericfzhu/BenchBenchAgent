@@ -10,7 +10,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from bba.audit_runner import SealedAuditRunner, build_public_audit_population
+from bba.catalog import CATALOG_DIGEST
 from bba.evidence import EvidenceStore
+from bba.evaluator_identity import build_evaluator_identity
 from bba.errors import ProviderFailure
 from bba.holdouts import HoldoutRegistry
 from bba.protocol import (
@@ -28,6 +30,19 @@ from tests.fixtures import CalibratedSolverFixture, ExecutableCreatorFixture, Lo
 from bba.tournament import TournamentController
 from bba.replay import replay_solver_attempt
 from bba.validator import PackageValidator, read_jsonl_strict
+
+
+class TrackingPackageValidator(PackageValidator):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.solver_score_calls = 0
+
+    def run_package_python(self, package, workspace, script, args, cwd, timeout_seconds=None):
+        if Path(script).name == "scorer.py" and "predictions.jsonl" in args:
+            self.solver_score_calls += 1
+        return super().run_package_python(
+            package, workspace, script, args, cwd, timeout_seconds
+        )
 
 
 class TestEndStateTournament(unittest.TestCase):
@@ -56,6 +71,9 @@ class TestEndStateTournament(unittest.TestCase):
             },
             "audit_policy": {"version": "audit-v1"},
         }
+        evaluator = build_evaluator_identity(
+            "creator-prompt", "solver-prompt", CATALOG_DIGEST
+        )
         self.manifest = ExperimentManifest(
             epoch_id="fixture-epoch",
             cohort=self.cohort,
@@ -65,7 +83,8 @@ class TestEndStateTournament(unittest.TestCase):
             hidden_commitments={key: digest_json(value) for key, value in self.hidden_material.items()},
             creator_prompt_digest="creator-prompt",
             solver_prompt_digest="solver-prompt",
-            evaluator_version="a" * 64,
+            evaluator_version=evaluator["root_digest"],
+            evaluator_components=evaluator,
             sandbox=SandboxCapabilities(backend="trusted-fixture-only"),
         )
         creator_biases = (0.20, 0.28, 0.36, 0.50)
@@ -80,7 +99,7 @@ class TestEndStateTournament(unittest.TestCase):
         self.controller = TournamentController(
             self.manifest,
             evidence,
-            PackageValidator(LocalFixtureSandbox(acknowledge_unsafe=True)),
+            TrackingPackageValidator(LocalFixtureSandbox(acknowledge_unsafe=True)),
             {
                 identity.artifact_id: ExecutableCreatorFixture(bias)
                 for identity, bias in zip(self.cohort, creator_biases)
@@ -110,11 +129,35 @@ class TestEndStateTournament(unittest.TestCase):
         )
 
     def test_automatic_sealed_audit_uses_no_score_files(self):
+        class InvalidFinalRound:
+            def __init__(self, delegate):
+                self.delegate = delegate
+
+            def build(self, identity, round_index, output_dir, *args, **kwargs):
+                self.delegate.build(
+                    identity, round_index, output_dir, *args, **kwargs
+                )
+                if round_index == 2:
+                    (output_dir / "generator.py").unlink()
+
+        excluded_creator = self.cohort[0].artifact_id
+        self.controller.creator_backends[excluded_creator] = InvalidFinalRound(
+            self.controller.creator_backends[excluded_creator]
+        )
         self.controller.run_public_epoch()
         population = build_public_audit_population(
             self.controller, self.controller.validator
         )
         self.assertIn("control:public-optimizer", population["public_scores"])
+        excluded_snapshot = next(
+            snapshot
+            for snapshot in self.controller.snapshots
+            if snapshot.creator.artifact_id == excluded_creator
+            and snapshot.round_index == 2
+        )
+        self.assertNotIn(
+            f"base:{excluded_snapshot.snapshot_id}", population["public_scores"]
+        )
         self.controller.close_public_epoch()
         hidden_cohort = tuple(
             replace(identity, scaffold="sealed-fixture-v1")
@@ -132,7 +175,17 @@ class TestEndStateTournament(unittest.TestCase):
         self.assertIn("composite", audit["targets"])
         self.assertIn("hidden_only", audit["targets"])
         self.assertTrue(audit["holdout_retired"])
-        self.assertEqual(len(audit["hidden_solver_cells"]), 48)
+        self.assertEqual(len(audit["hidden_solver_cells"]), 36)
+        self.assertFalse(any(
+            cell["snapshot_id"] == excluded_snapshot.snapshot_id
+            for cell in audit["hidden_solver_cells"]
+        ))
+        hidden_replay = replay_solver_attempt(
+            self.controller.evidence,
+            self.manifest.epoch_id,
+            audit["hidden_solver_cells"][0]["selected_attempt_id"],
+        )
+        self.assertTrue(hidden_replay["verified"])
         self.assertTrue(
             all(all(checks.values()) for checks in audit["damage_checks"].values())
         )
@@ -146,6 +199,7 @@ class TestEndStateTournament(unittest.TestCase):
         self.assertEqual(len(self.controller.instances), 12)
         self.assertEqual(len(self.controller.round_seeds), 3)
         self.assertEqual(sum(len(cells) for cells in self.controller.cells.values()), 144)
+        self.assertEqual(self.controller.validator.solver_score_calls, 144)
         self.assertTrue(all(record.passed for record in self.controller.validations.values()))
         first_cell = next(iter(self.controller.cells.values()))[0]
         replay = replay_solver_attempt(
@@ -260,6 +314,25 @@ class TestEndStateTournament(unittest.TestCase):
         self.assertTrue(all(row["canonical_benchmarks"] == 3 for row in public["solver_ranking"]))
         self.assertFalse(public["hidden_evidence_included"])
 
+        cell_path = self.controller.evidence.record_path(
+            self.manifest.epoch_id,
+            "solver-cells",
+            self.controller._cell_record_id(
+                self.controller.snapshot_by_id(first_cell.snapshot_id),
+                first_cell.solver,
+                first_cell.repetition,
+            ),
+        )
+        original_cell = cell_path.read_bytes()
+        tampered_cell = json.loads(original_cell)
+        tampered_cell["debrief_digest"] = "0" * 64
+        cell_path.write_bytes(canonical_json(tampered_cell) + b"\n")
+        try:
+            with self.assertRaisesRegex(ValueError, "solver cell selection"):
+                TournamentController(self.manifest, self.controller.evidence)
+        finally:
+            cell_path.write_bytes(original_cell)
+
 
     def test_public_epoch_resumes_after_an_interrupted_creator(self):
         class InterruptOnce:
@@ -360,6 +433,60 @@ class TestEndStateTournament(unittest.TestCase):
         )
         controller.run_public_epoch()
         self.assertEqual(len(controller.round_seeds), 3)
+
+    def test_public_epoch_resumes_after_seed_freeze(self):
+        class InterruptValidationOnce(PackageValidator):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.interrupted = False
+
+            def validate(self, *args, **kwargs):
+                if not self.interrupted:
+                    self.interrupted = True
+                    raise KeyboardInterrupt("simulated stop after seed freeze")
+                return super().validate(*args, **kwargs)
+
+        manifest = replace(
+            self.manifest,
+            epoch_id="seed-resume-fixture",
+            thresholds=DecisionThresholds(sample_count=6, solver_repetitions=1),
+        )
+        evidence = EvidenceStore(self.root)
+        creators = {
+            identity.artifact_id: ExecutableCreatorFixture(0.25)
+            for identity in self.cohort
+        }
+        solvers = {
+            identity.artifact_id: CalibratedSolverFixture(0.55)
+            for identity in self.cohort
+        }
+        interrupted = TournamentController(
+            manifest,
+            evidence,
+            InterruptValidationOnce(
+                LocalFixtureSandbox(acknowledge_unsafe=True), sample_count=6
+            ),
+            creators,
+            solvers,
+        )
+        with self.assertRaises(KeyboardInterrupt):
+            interrupted.run_public_epoch()
+        frozen_seed = interrupted.round_seeds[0]
+
+        resumed = TournamentController(
+            manifest,
+            evidence,
+            PackageValidator(
+                LocalFixtureSandbox(acknowledge_unsafe=True), sample_count=6
+            ),
+            creators,
+            solvers,
+        )
+        self.assertEqual(resumed.round_seeds[0], frozen_seed)
+        self.assertEqual(resumed.state.recover_interrupted(manifest.epoch_id), 1)
+        resumed.run_public_epoch()
+        self.assertEqual(resumed.round_seeds[0], frozen_seed)
+        self.assertEqual(resumed.epoch_status()["phase"], "awaiting_review")
 
     def test_provider_failures_retry_and_keep_every_attempt(self):
         class FailTwice:

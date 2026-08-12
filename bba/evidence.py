@@ -163,6 +163,13 @@ class EvidenceStore:
 
     def load_instances(self, epoch_id: str) -> list[EvaluationInstance]:
         root = self.epoch_root(epoch_id) / "instances"
+        return self._load_instances_from(root)
+
+    def load_hidden_instances(self, epoch_id: str) -> list[EvaluationInstance]:
+        root = self.epoch_root(epoch_id) / "audit" / "hidden-instances"
+        return self._load_instances_from(root)
+
+    def _load_instances_from(self, root: Path) -> list[EvaluationInstance]:
         instances = []
         for metadata_path in sorted(root.glob("*/instance.json")):
             if metadata_path.parent.name.startswith("."):

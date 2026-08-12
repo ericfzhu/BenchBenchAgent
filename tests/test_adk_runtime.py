@@ -21,7 +21,8 @@ from bba.adk_runtime import (
     AdkSolverBackend,
     resolve_model,
 )
-from bba.catalog import CATALOG_VERSION, SERVERLESS_COHORT
+from bba.catalog import CATALOG_DIGEST, CATALOG_VERSION, SERVERLESS_COHORT
+from bba.evaluator_identity import build_evaluator_identity
 from bba.errors import PredictionParseFailure, ProviderFailure
 from bba.evidence import EvidenceStore
 from bba.gcp import configure_gcp_environment
@@ -91,6 +92,11 @@ class TestAdkRuntime(unittest.TestCase):
             ),
             ModelIdentity("google", "d", "family-a", "gemini:d"),
         )
+        creator_prompt_digest = digest_json(CREATOR_INSTRUCTION)
+        solver_prompt_digest = digest_json(SOLVER_INSTRUCTION)
+        evaluator = build_evaluator_identity(
+            creator_prompt_digest, solver_prompt_digest, CATALOG_DIGEST
+        )
         self.manifest = ExperimentManifest(
             epoch_id="adk-runtime-test",
             cohort=cohort,
@@ -102,9 +108,10 @@ class TestAdkRuntime(unittest.TestCase):
                 "hidden_seeds": digest_json([43]),
                 "audit_policy": digest_json({"version": 1}),
             },
-            creator_prompt_digest=digest_json(CREATOR_INSTRUCTION),
-            solver_prompt_digest=digest_json(SOLVER_INSTRUCTION),
-            evaluator_version="a" * 64,
+            creator_prompt_digest=creator_prompt_digest,
+            solver_prompt_digest=solver_prompt_digest,
+            evaluator_version=evaluator["root_digest"],
+            evaluator_components=evaluator,
         )
 
     def test_exact_stable_adk_release_is_loaded(self):

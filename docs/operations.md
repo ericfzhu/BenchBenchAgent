@@ -435,6 +435,6 @@ Use these controls:
 - Set model quotas before the epoch.
 - Check local agent traces after a small test epoch.
 - Estimate the full epoch from measured token use.
-- Keep three solver repetitions for a conforming version 5 epoch.
+- Keep three solver repetitions for a conforming version 6 epoch.
 
 Local storage, local CPU work, and local backup have no Vertex AI inference charge.

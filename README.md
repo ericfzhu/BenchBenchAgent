@@ -11,7 +11,7 @@ BBA makes a creator-by-solver score matrix.
 BBA also makes separate creator and solver ranks.
 An independent reviewer must approve a benchmark before BBA adds it to the canonical registry.
 A sealed audit tests the public evaluator after the public epoch is closed.
-Version `0.9.0` runs the hidden experiment from committed local material.
+Version `0.10.0` runs the hidden experiment from committed local material.
 Paid Vertex and full production acceptance evidence are still required.
 See the [implementation status](docs/implementation-status.md) before you run a production epoch.
 

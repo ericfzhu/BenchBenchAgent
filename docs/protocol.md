@@ -1,6 +1,6 @@
 # BBA protocol specification
 
-This document gives the normative rules for BBA protocol version `bba.epoch.v5`.
+This document gives the normative rules for BBA protocol version `bba.epoch.v6`.
 The word `must` identifies a required rule.
 
 ## 1. Purpose
@@ -86,6 +86,7 @@ The operator must not supply an epoch manifest.
 The manifest is immutable evidence after BBA creates it.
 
 The evaluator root digest must bind the protocol, controller source, prompt templates, model catalog, scoring rules, validation rules, audit rules, Python runtime, and installed controller dependencies.
+The controller must recompute this identity when it loads an epoch.
 Any bound change must create a new evaluator identity and a new sealed target.
 
 The hidden commitments must contain exactly these names:
@@ -301,7 +302,8 @@ Plain solver text is not a submission.
 The default protocol uses three repetitions for each cell.
 The controller must store item-level correctness evidence for a successful cell.
 The controller must preserve exact predictions, the structured debrief, the candidate scorer report, the controller scorer report, and command diagnostics for each successful attempt.
-An independent process must be able to replay a successful score without a model call.
+Each attempt must bind the exact public or hidden evaluation instance ID.
+An independent process must be able to replay a successful public or hidden score without a model call.
 
 A cell can have one of these states:
 

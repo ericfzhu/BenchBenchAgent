@@ -36,12 +36,14 @@ def replay_solver_attempt(
     )
     predictions = read_jsonl_strict(predictions_path)
 
-    snapshot_id = attempt.cell_id.split("--", 1)[0]
+    instances = evidence.load_instances(epoch_id) + evidence.load_hidden_instances(
+        epoch_id
+    )
     instance = next(
         (
             item
-            for item in evidence.load_instances(epoch_id)
-            if item.snapshot_id == snapshot_id
+            for item in instances
+            if item.instance_id == attempt.instance_id
         ),
         None,
     )

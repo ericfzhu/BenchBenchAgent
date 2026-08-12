@@ -284,8 +284,12 @@ class SealedAuditRunner:
         identities = self._hidden_identities(material)
         seeds = tuple(material["hidden_seeds"]["generator_seeds"])
         final_round = self.controller.manifest.thresholds.rounds - 1
+        eligible_profiles = set(self.controller._audit_public_scores)
         snapshots = [
-            item for item in self.controller.snapshots if item.round_index == final_round
+            item
+            for item in self.controller.snapshots
+            if item.round_index == final_round
+            and f"base:{item.snapshot_id}" in eligible_profiles
         ]
         hidden_scores: Dict[str, float] = {}
         composite_scores: Dict[str, float] = {}
