@@ -22,6 +22,8 @@ from bba.protocol import (
     ExperimentManifest,
     ModelIdentity,
     ResourceBudget,
+    ItemDebrief,
+    SolverDebrief,
     SandboxCapabilities,
     ScoreSummary,
     SolverAttempt,
@@ -147,6 +149,18 @@ class TestEndStateProtocol(unittest.TestCase):
                 per_item={"item": True},
             )
 
+    def test_solver_debrief_requires_unique_complete_diagnostics(self):
+        item = ItemDebrief(
+            item_id="item-1",
+            confidence=0.5,
+            approach_tags=("deduction",),
+            evidence_refs=("solver_packet.md",),
+            concise_justification="Applied the public rule.",
+        )
+        self.assertEqual(SolverDebrief(items=(item,)).schema_version, 1)
+        with self.assertRaises(ValueError):
+            SolverDebrief(items=(item, item))
+
     def test_manifest_freeze_is_idempotent_and_conflicts_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:
             store = EvidenceStore(Path(temporary))
@@ -220,7 +234,9 @@ class TestEndStateProtocol(unittest.TestCase):
     def test_epoch_estimate_budget_and_scheduler_are_bounded(self):
         value = manifest()
         estimate = estimate_epoch(value)
-        self.assertGreater(estimate.public_solver_invocations, 0)
+        self.assertEqual(estimate.creator_invocations, 12)
+        self.assertEqual(estimate.public_solver_invocations, 144)
+        self.assertEqual(estimate.hidden_solver_invocations, 48)
         ledger = EpochBudgetLedger(value)
         ledger.reserve(1, 1, 1)
         with self.assertRaises(RuntimeError):

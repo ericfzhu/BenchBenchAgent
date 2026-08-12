@@ -22,7 +22,7 @@ from bba.adk_runtime import (
     resolve_model,
 )
 from bba.catalog import CATALOG_VERSION, SERVERLESS_COHORT
-from bba.errors import ProviderFailure
+from bba.errors import PredictionParseFailure, ProviderFailure
 from bba.evidence import EvidenceStore
 from bba.gcp import configure_gcp_environment
 from bba.protocol import ExperimentManifest, ModelIdentity, ResourceBudget, digest_json
@@ -202,6 +202,23 @@ class TestAdkRuntime(unittest.TestCase):
             _tool_call("submit-1", "submit_predictions", {
                 "predictions_json": json.dumps(rows),
             }),
+            _tool_call("debrief-1", "submit_debrief", {
+                "debrief_json": json.dumps({
+                    "schema_version": 1,
+                    "items": [
+                        {
+                            "item_id": row["id"],
+                            "confidence": 0.75,
+                            "approach_tags": ["deduction"],
+                            "evidence_refs": ["README.md"],
+                            "concise_justification": "Applied the public rule.",
+                            "uncertainties": [],
+                            "missing_information": [],
+                        }
+                        for row in rows
+                    ],
+                }),
+            }),
             _final(),
         ])
         backend = AdkSolverBackend(model)
@@ -216,10 +233,29 @@ class TestAdkRuntime(unittest.TestCase):
                 self.manifest,
             )
         self.assertEqual(predictions, rows)
+        debrief = backend.take_debrief()
+        self.assertEqual([item.item_id for item in debrief.items], ["item-1", "item-2"])
         trace = backend.take_trace()
-        self.assertEqual(trace.tool_calls, ("submit_predictions",))
-        self.assertEqual(trace.model_calls, 2)
+        self.assertEqual(trace.tool_calls, ("submit_predictions", "submit_debrief"))
+        self.assertEqual(trace.model_calls, 3)
         self.assertTrue(trace.session_id.startswith("solver-"))
+
+    def test_solver_rejects_debrief_before_predictions(self):
+        model = ScriptedLlm(model="scripted-debrief-order", responses=[
+            _tool_call("debrief-early", "submit_debrief", {
+                "debrief_json": json.dumps({"schema_version": 1, "items": []}),
+            }),
+        ])
+        backend = AdkSolverBackend(model)
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(PredictionParseFailure):
+                backend.solve(
+                    self.identity,
+                    Path(temporary),
+                    [{"id": "item-1"}],
+                    0,
+                    self.manifest,
+                )
 
     def test_preflight_checks_tool_use_usage_and_identity(self):
         cohort = self.manifest.cohort
@@ -230,6 +266,20 @@ class TestAdkRuntime(unittest.TestCase):
                     "predictions_json": json.dumps([
                         {"id": "preflight-item", "answer": 1}
                     ]),
+                }),
+                _tool_call("debrief-1", "submit_debrief", {
+                    "debrief_json": json.dumps({
+                        "schema_version": 1,
+                        "items": [{
+                            "item_id": "preflight-item",
+                            "confidence": 1.0,
+                            "approach_tags": ["preflight"],
+                            "evidence_refs": [],
+                            "concise_justification": "Completed the declared preflight item.",
+                            "uncertainties": [],
+                            "missing_information": [],
+                        }],
+                    }),
                 }),
                 _final(),
             ])

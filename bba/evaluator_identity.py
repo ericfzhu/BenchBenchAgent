@@ -12,6 +12,7 @@ from bba.protocol import digest_json
 
 
 BOUND_MODULES = (
+    "adk_runtime.py",
     "audit.py",
     "catalog.py",
     "damage.py",

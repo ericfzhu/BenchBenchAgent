@@ -15,6 +15,7 @@ from typing import Any, Mapping, Optional, Sequence
 
 from bba.protocol import ExperimentManifest, ModelIdentity
 from bba.runtime import CommandResult
+from bba.protocol import ItemDebrief, SolverDebrief
 
 
 GENERATOR_SOURCE = r'''"""BBA_TEST_FIXTURE: deterministic arithmetic benchmark generator."""
@@ -165,6 +166,7 @@ class ExecutableCreatorFixture:
             "round": round_index,
             "difficulty_bias": bias,
             "feedback_source": feedback.get("source") if feedback else None,
+            "feedback_debrief_count": len(feedback.get("solver_debriefs", ())),
         }
         files = {
             "README.md": "# Executable arithmetic fixture\nA deterministic BBA protocol fixture.\n",
@@ -193,9 +195,23 @@ class CalibratedSolverFixture:
     def solve(self, identity, solver_bundle, items, repetition, manifest):
         threshold = self.skill + (-0.01, 0.0, 0.01)[repetition % 3]
         predictions = []
+        debriefs = []
         for item in items:
             answer = (item["a"] * item["b"] + item["c"]) % 997
             if float(item["difficulty"]) > threshold:
                 answer = (answer + 1) % 997
             predictions.append({"id": item["id"], "answer": answer})
+            debriefs.append(ItemDebrief(
+                item_id=item["id"],
+                confidence=0.8,
+                approach_tags=("arithmetic-rule",),
+                evidence_refs=("solver_packet.md",),
+                concise_justification="Applied the public arithmetic rule to the item fields.",
+            ))
+        self._debrief = SolverDebrief(items=tuple(debriefs))
         return predictions
+
+    def take_debrief(self):
+        value = self._debrief
+        self._debrief = None
+        return value

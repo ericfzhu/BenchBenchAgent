@@ -11,8 +11,8 @@ from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional
 
 
-PROTOCOL_VERSION = "bba.epoch.v4"
-SCHEMA_VERSION = 4
+PROTOCOL_VERSION = "bba.epoch.v5"
+SCHEMA_VERSION = 5
 
 
 class StrEnum(str, Enum):
@@ -125,7 +125,7 @@ class RetryPolicy:
             raise ValueError("retry max_attempts must be positive")
         allowed = {CellState.TIMEOUT.value, CellState.PROVIDER_ERROR.value}
         if set(self.retryable_states) != allowed:
-            raise ValueError("BBA v4 retries only timeout and provider_error")
+            raise ValueError("BBA retries only timeout and provider_error")
 
 
 @dataclass(frozen=True)
@@ -142,7 +142,7 @@ class DecisionThresholds:
 
     def __post_init__(self) -> None:
         if self.sample_count <= 0 or self.rounds != 3:
-            raise ValueError("BBA v1 requires three rounds and a positive sample count")
+            raise ValueError("BBA requires three rounds and a positive sample count")
         if self.solver_repetitions < 1:
             raise ValueError("solver_repetitions must be positive")
         if not 0 < self.rejection_accuracy <= 1:
@@ -251,6 +251,48 @@ class ScoreSummary:
 
 
 @dataclass(frozen=True)
+class ItemDebrief:
+    item_id: str
+    confidence: float
+    approach_tags: tuple
+    evidence_refs: tuple
+    concise_justification: str
+    uncertainties: tuple = ()
+    missing_information: tuple = ()
+
+    def __post_init__(self) -> None:
+        if not self.item_id:
+            raise ValueError("debrief item IDs cannot be blank")
+        if not 0.0 <= self.confidence <= 1.0:
+            raise ValueError("debrief confidence must be between zero and one")
+        if not self.approach_tags or len(self.approach_tags) > 8:
+            raise ValueError("debriefs require one to eight approach tags")
+        if any(not isinstance(value, str) or not value.strip() for value in self.approach_tags):
+            raise ValueError("debrief approach tags must be non-empty strings")
+        if len(self.concise_justification.strip()) < 1 or len(self.concise_justification) > 1000:
+            raise ValueError("debrief justifications must contain 1 to 1000 characters")
+        for values in (self.evidence_refs, self.uncertainties, self.missing_information):
+            if len(values) > 8 or any(
+                not isinstance(value, str) or not value.strip() or len(value) > 500
+                for value in values
+            ):
+                raise ValueError("debrief string lists contain invalid values")
+
+
+@dataclass(frozen=True)
+class SolverDebrief:
+    items: tuple
+    schema_version: int = 1
+
+    def __post_init__(self) -> None:
+        if self.schema_version != 1 or not self.items:
+            raise ValueError("solver debriefs require schema version 1 and item records")
+        identifiers = [item.item_id for item in self.items]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("solver debrief item IDs must be unique")
+
+
+@dataclass(frozen=True)
 class SolverAttempt:
     attempt_id: str
     cell_id: str
@@ -261,6 +303,7 @@ class SolverAttempt:
     finished_at: str
     score: Optional[ScoreSummary] = None
     prediction_digest: Optional[str] = None
+    debrief_digest: Optional[str] = None
     per_item: Mapping[str, bool] = field(default_factory=dict)
     evidence_files: Mapping[str, str] = field(default_factory=dict)
     evidence_digests: Mapping[str, str] = field(default_factory=dict)
@@ -276,19 +319,25 @@ class SolverAttempt:
         if self.state == CellState.SUCCESS:
             required = {
                 "predictions",
+                "debrief",
                 "candidate_scorer_report",
                 "controller_scorer_report",
                 "command_result",
             }
-            if self.score is None or not self.prediction_digest:
-                raise ValueError("successful attempts require score and prediction evidence")
+            if self.score is None or not self.prediction_digest or not self.debrief_digest:
+                raise ValueError("successful attempts require score, prediction, and debrief evidence")
             if not required.issubset(self.evidence_files):
                 raise ValueError("successful attempts require complete replay evidence")
             if len(self.per_item) != self.score.total:
                 raise ValueError("successful attempts require item-level correctness")
             if sum(bool(value) for value in self.per_item.values()) != self.score.correct:
                 raise ValueError("attempt item results do not match score")
-        elif self.score is not None or self.prediction_digest is not None or self.per_item:
+        elif (
+            self.score is not None
+            or self.prediction_digest is not None
+            or self.debrief_digest is not None
+            or self.per_item
+        ):
             raise ValueError("non-success attempts cannot carry numeric score evidence")
 
 
@@ -304,6 +353,7 @@ class SolverCell:
     selected_attempt_id: str
     score: Optional[ScoreSummary] = None
     prediction_digest: Optional[str] = None
+    debrief_digest: Optional[str] = None
     per_item: Mapping[str, bool] = field(default_factory=dict)
     error: Optional[str] = None
 
@@ -315,13 +365,18 @@ class SolverCell:
         if len(set(self.attempt_ids)) != len(self.attempt_ids):
             raise ValueError("solver cell attempt IDs must be unique")
         if self.state == CellState.SUCCESS:
-            if self.score is None or not self.prediction_digest:
-                raise ValueError("successful cells require score and prediction evidence")
+            if self.score is None or not self.prediction_digest or not self.debrief_digest:
+                raise ValueError("successful cells require score, prediction, and debrief evidence")
             if len(self.per_item) != self.score.total:
                 raise ValueError("successful cells require item-level correctness")
             if sum(bool(value) for value in self.per_item.values()) != self.score.correct:
                 raise ValueError("item-level results do not match score")
-        elif self.score is not None or self.prediction_digest is not None or self.per_item:
+        elif (
+            self.score is not None
+            or self.prediction_digest is not None
+            or self.debrief_digest is not None
+            or self.per_item
+        ):
             raise ValueError("non-success cell states cannot carry numeric score evidence")
 
 
@@ -451,6 +506,23 @@ def score_summary_from_mapping(value: Optional[Mapping[str, Any]]) -> Optional[S
     if value is None:
         return None
     return ScoreSummary(**dict(value))
+
+
+def solver_debrief_from_mapping(value: Mapping[str, Any]) -> SolverDebrief:
+    data = dict(value)
+    data["items"] = tuple(
+        ItemDebrief(
+            **{
+                **dict(item),
+                "approach_tags": tuple(item.get("approach_tags", ())),
+                "evidence_refs": tuple(item.get("evidence_refs", ())),
+                "uncertainties": tuple(item.get("uncertainties", ())),
+                "missing_information": tuple(item.get("missing_information", ())),
+            }
+        )
+        for item in data.get("items", ())
+    )
+    return SolverDebrief(**data)
 
 
 def solver_cell_from_mapping(value: Mapping[str, Any]) -> SolverCell:

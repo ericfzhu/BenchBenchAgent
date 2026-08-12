@@ -7,8 +7,8 @@ Do not mark an item complete without the named evidence file.
 
 | Field | Value |
 | --- | --- |
-| BBA version | `0.8.1` |
-| Protocol | `bba.epoch.v4` |
+| BBA version | `0.9.0` |
+| Protocol | `bba.epoch.v5` |
 | Git commit | Not run |
 | Epoch ID | Not run |
 | Google Cloud project | Not run |
@@ -39,6 +39,8 @@ Required evidence:
 - One post-design seed for each round
 - One immutable instance for each valid design
 - One complete public solver matrix
+- One prediction-locked structured debrief for each successful solver attempt
+- A bounded correctness-annotated debrief report in each repair-round input
 - One controlled creator interruption and resume
 - One controlled public solver interruption and resume
 - Replay success for every successful public attempt
@@ -66,6 +68,7 @@ Required evidence:
 - Hidden material opens only after public closure
 - Fresh instances use the committed hidden seeds
 - Hidden attempts use the committed sealed scaffold identities
+- Hidden debriefs remain outside creator feedback
 - One controlled hidden solver interruption and resume
 - All five matched damage classes are detected
 - The public-optimizer control exposes the intended selection gap

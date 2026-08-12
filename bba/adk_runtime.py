@@ -32,7 +32,14 @@ from google.genai import types
 
 from bba.errors import PredictionParseFailure, ProviderFailure, SolverTimedOut
 from bba.gcp import configure_gcp_environment
-from bba.protocol import ExperimentManifest, ModelIdentity, digest_json, to_primitive
+from bba.protocol import (
+    ExperimentManifest,
+    ModelIdentity,
+    SolverDebrief,
+    digest_json,
+    solver_debrief_from_mapping,
+    to_primitive,
+)
 from bba.runtime import SecureSandbox
 
 
@@ -77,7 +84,10 @@ SOLVER_INSTRUCTION = """You are a blind solver in a BenchBenchAgent epoch.
 
 You may inspect only the isolated solver bundle exposed by the bundle tools.
 Solve every declared item under the frozen budget. Submit exactly one JSON
-answer for every item with submit_predictions. Do not assume access to creator
+answer for every item with submit_predictions. After BBA locks the predictions,
+submit one concise diagnostic for every item with submit_debrief. The debrief
+must describe the approach, public evidence, uncertainty, and confidence. It
+cannot change a locked answer. Do not assume access to creator
 files, private gold, other candidates, prior repetitions, or hidden audit
 evidence. A final prose answer does not count as a submission.
 """
@@ -520,6 +530,12 @@ class AdkSolverBackend(_TraceBackend):
         self.model = model
         self.instruction = instruction
         self.prompt_digest = digest_json(instruction)
+        self._last_debrief: Optional[SolverDebrief] = None
+
+    def take_debrief(self) -> Optional[SolverDebrief]:
+        debrief = self._last_debrief
+        self._last_debrief = None
+        return debrief
 
     def solve(
         self,
@@ -529,10 +545,12 @@ class AdkSolverBackend(_TraceBackend):
         repetition: int,
         manifest: ExperimentManifest,
     ) -> Sequence[Mapping[str, Any]]:
+        self._last_debrief = None
         root = Path(solver_bundle).resolve()
         expected_ids = [str(item["id"]) for item in items]
         expected_set = set(expected_ids)
         submitted: Dict[str, Any] = {}
+        submitted_debrief: Optional[SolverDebrief] = None
         lock = threading.Lock()
 
         def list_bundle_files() -> Dict[str, Any]:
@@ -582,6 +600,8 @@ class AdkSolverBackend(_TraceBackend):
             Args:
                 predictions_json: JSON array of objects with exactly id and answer.
             """
+            if submitted:
+                raise ValueError("predictions are already locked")
             try:
                 rows = json.loads(predictions_json)
             except json.JSONDecodeError as exc:
@@ -604,11 +624,40 @@ class AdkSolverBackend(_TraceBackend):
                 submitted.update(parsed)
             return {"accepted": len(submitted)}
 
+        def submit_debrief(debrief_json: str) -> Dict[str, Any]:
+            """Submit one structured diagnostic after predictions are locked.
+
+            Args:
+                debrief_json: JSON object with schema_version 1 and one item diagnostic per prediction.
+            """
+            nonlocal submitted_debrief
+            if set(submitted) != expected_set:
+                raise ValueError("submit complete predictions before the debrief")
+            if submitted_debrief is not None:
+                raise ValueError("the debrief is already locked")
+            try:
+                value = json.loads(debrief_json)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"debrief_json is invalid: {exc}") from exc
+            if not isinstance(value, dict) or set(value) != {"schema_version", "items"}:
+                raise ValueError("debrief_json must contain exactly schema_version and items")
+            debrief = solver_debrief_from_mapping(value)
+            if {item.item_id for item in debrief.items} != expected_set:
+                raise ValueError("debrief IDs must match the locked prediction IDs")
+            with lock:
+                submitted_debrief = debrief
+            return {"accepted": len(debrief.items), "predictions_locked": True}
+
         agent = Agent(
             name=("solver_" + re.sub(r"\W", "_", identity.artifact_id))[:120],
             model=self.model,
             instruction=self.instruction,
-            tools=[list_bundle_files, read_bundle_file, submit_predictions],
+            tools=[
+                list_bundle_files,
+                read_bundle_file,
+                submit_predictions,
+                submit_debrief,
+            ],
             mode="chat",
         )
         message = json.dumps({
@@ -642,6 +691,8 @@ class AdkSolverBackend(_TraceBackend):
             raise SolverTimedOut(
                 f"ADK solver invocation exceeded {manifest.budget.solver_seconds} seconds"
             ) from exc
+        except ValueError as exc:
+            raise PredictionParseFailure(f"ADK solver submission is invalid: {exc}") from exc
         except Exception as exc:
             raise ProviderFailure(f"ADK solver invocation failed: {exc}") from exc
         self._verify_usage_metadata()
@@ -649,6 +700,9 @@ class AdkSolverBackend(_TraceBackend):
             raise PredictionParseFailure(
                 f"solver submitted {len(submitted)} of {len(expected_set)} predictions"
             )
+        if submitted_debrief is None:
+            raise PredictionParseFailure("solver did not submit the required structured debrief")
+        self._last_debrief = submitted_debrief
         return [{"id": item_id, "answer": submitted[item_id]} for item_id in expected_ids]
 
 

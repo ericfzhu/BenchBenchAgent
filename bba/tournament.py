@@ -27,6 +27,7 @@ from bba.protocol import (
     PromotionRecord,
     ReviewFindings,
     ScoreSummary,
+    SolverDebrief,
     SolverAttempt,
     SolverCell,
     canonical_json,
@@ -34,6 +35,7 @@ from bba.protocol import (
     promotion_record_from_mapping,
     solver_cell_from_mapping,
     to_primitive,
+    solver_debrief_from_mapping,
     validation_record_from_mapping,
 )
 from bba.registry import PromotionRegistry
@@ -41,6 +43,10 @@ from bba.scoring import CandidateEvaluation, classify_candidate, matrix, rank_cr
 from bba.scheduler import BoundedScheduler
 from bba.state import LocalStateStore
 from bba.validator import PackageValidator, read_jsonl_strict, validate_answer_rows, validate_item_rows, write_jsonl
+
+
+MAX_PUBLIC_DEBRIEF_RECORDS = 150
+MAX_PUBLIC_DEBRIEF_BYTES = 48 * 1024
 
 
 class CreatorBackend(Protocol):
@@ -65,6 +71,9 @@ class SolverBackend(Protocol):
         repetition: int,
         manifest: ExperimentManifest,
     ) -> Sequence[Mapping[str, Any]]:
+        ...
+
+    def take_debrief(self) -> Optional[SolverDebrief]:
         ...
 
 
@@ -476,6 +485,7 @@ class TournamentController:
             name: (base / filename).relative_to(self.evidence.root).as_posix()
             for name, filename in {
                 "predictions": "predictions.jsonl",
+                "debrief": "debrief.json",
                 "candidate_scorer_report": "candidate-scorer-report.json",
                 "controller_scorer_report": "controller-scorer-report.json",
                 "command_result": "command-result.json",
@@ -526,6 +536,8 @@ class TournamentController:
                         repetition,
                         self.manifest,
                     ))
+                    take_debrief = getattr(backend, "take_debrief", None)
+                    debrief = take_debrief() if take_debrief is not None else None
                 finally:
                     self._publish_agent_trace(
                         attempt_id,
@@ -539,6 +551,14 @@ class TournamentController:
                 prediction_path = cell_root / "predictions.jsonl"
                 write_jsonl(prediction_path, predictions)
                 prediction_digest = hashlib.sha256(prediction_path.read_bytes()).hexdigest()
+                if debrief is None:
+                    raise PredictionParseFailure("solver did not publish a structured debrief")
+                debrief_ids = {item.item_id for item in debrief.items}
+                if debrief_ids != prediction_ids:
+                    raise PredictionParseFailure("debrief IDs do not match prediction IDs")
+                debrief_path = cell_root / "debrief.json"
+                debrief_path.write_bytes(canonical_json(debrief) + b"\n")
+                debrief_digest = file_digest(debrief_path)
 
                 # Creator scorer runs in a fresh generated-code sandbox.  The
                 # controller independently recomputes exact matches as a check.
@@ -606,6 +626,7 @@ class TournamentController:
                 }) + b"\n")
                 artifacts = {
                     "predictions": prediction_path,
+                    "debrief": debrief_path,
                     "candidate_scorer_report": score_output,
                     "controller_scorer_report": controller_report,
                     "command_result": command_result,
@@ -624,6 +645,7 @@ class TournamentController:
                     finished_at=datetime.now(timezone.utc).isoformat(),
                     score=summary,
                     prediction_digest=prediction_digest,
+                    debrief_digest=debrief_digest,
                     per_item=per_item,
                     evidence_files=evidence_files,
                     evidence_digests=evidence_digests,
@@ -707,6 +729,7 @@ class TournamentController:
             selected_attempt_id=selected.attempt_id,
             score=selected.score,
             prediction_digest=selected.prediction_digest,
+            debrief_digest=selected.debrief_digest,
             per_item=selected.per_item,
             error=selected.error,
         )
@@ -762,7 +785,7 @@ class TournamentController:
         validation = self.validations[snapshot.snapshot_id]
         cells = self.cells.get(snapshot.snapshot_id, [])
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "source": "public_epoch_evidence_only",
             "snapshot_id": snapshot.snapshot_id,
             "validation": to_primitive(validation),
@@ -777,7 +800,72 @@ class TournamentController:
                 }
                 for cell in cells
             ],
+            "solver_debriefs": self._public_debrief_feedback(cells),
         }
+
+    def _public_debrief_feedback(self, cells: Sequence[SolverCell]) -> List[Dict[str, Any]]:
+        records = []
+        attempts = {
+            attempt.attempt_id: attempt
+            for values in self.attempts.values()
+            for attempt in values
+        }
+        for cell in sorted(cells, key=lambda item: (item.solver.artifact_id, item.repetition)):
+            if cell.state != CellState.SUCCESS:
+                continue
+            attempt = attempts.get(cell.selected_attempt_id)
+            if attempt is None or "debrief" not in attempt.evidence_files:
+                raise RuntimeError("successful solver cell has no debrief evidence")
+            debrief = solver_debrief_from_mapping(
+                read_json(self.evidence.root / attempt.evidence_files["debrief"])
+            )
+            for item in debrief.items:
+                records.append({
+                    "solver": cell.solver.artifact_id,
+                    "repetition": cell.repetition,
+                    "item_id": item.item_id,
+                    "correct": bool(cell.per_item[item.item_id]),
+                    "confidence": item.confidence,
+                    "approach_tags": list(item.approach_tags),
+                    "evidence_refs": list(item.evidence_refs),
+                    "concise_justification": item.concise_justification,
+                    "uncertainties": list(item.uncertainties),
+                    "missing_information": list(item.missing_information),
+                })
+        groups: Dict[tuple[str, int], List[Dict[str, Any]]] = {}
+        for record in records:
+            groups.setdefault((record["solver"], record["repetition"]), []).append(record)
+        for group in groups.values():
+            group.sort(key=lambda item: (
+                bool(item["correct"]),
+                -item["confidence"] if not item["correct"] else item["confidence"],
+                item["item_id"],
+            ))
+
+        # Keep the creator prompt bounded and sample every solver run before taking
+        # another diagnostic from the same run. The raw debrief evidence is not cut.
+        selected: List[Dict[str, Any]] = []
+        group_keys = sorted(groups)
+        while group_keys and len(selected) < MAX_PUBLIC_DEBRIEF_RECORDS:
+            remaining = []
+            added_this_pass = False
+            for key in group_keys:
+                group = groups[key]
+                if not group:
+                    continue
+                candidate = group.pop(0)
+                proposed = selected + [candidate]
+                if len(canonical_json(proposed)) <= MAX_PUBLIC_DEBRIEF_BYTES:
+                    selected.append(candidate)
+                    added_this_pass = True
+                if group:
+                    remaining.append(key)
+                if len(selected) >= MAX_PUBLIC_DEBRIEF_RECORDS:
+                    break
+            if not added_this_pass:
+                break
+            group_keys = remaining
+        return selected
 
     def run_public_epoch(self) -> None:
         expected = {identity.artifact_id for identity in self.manifest.cohort}

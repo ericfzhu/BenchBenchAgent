@@ -1,5 +1,6 @@
 """End-to-end creator/solver tournament with review and sealed audit."""
 
+import json
 import tempfile
 import unittest
 from dataclasses import replace
@@ -19,6 +20,7 @@ from bba.protocol import (
     PromotionDecision,
     ReviewFindings,
     SandboxCapabilities,
+    canonical_json,
     digest_json,
     to_primitive,
 )
@@ -154,6 +156,14 @@ class TestEndStateTournament(unittest.TestCase):
         self.assertTrue(replay["verified"])
         self.assertFalse(replay["model_call_used"])
         self.assertEqual(replay["score"], first_cell.score)
+        self.assertEqual(replay["debrief_digest"], first_cell.debrief_digest)
+        selected_attempt = next(
+            attempt
+            for attempts in self.controller.attempts.values()
+            for attempt in attempts
+            if attempt.attempt_id == first_cell.selected_attempt_id
+        )
+        self.assertIn("debrief", selected_attempt.evidence_files)
 
         for round_index in range(3):
             round_snapshots = [
@@ -171,6 +181,25 @@ class TestEndStateTournament(unittest.TestCase):
                 self.assertFalse(
                     (design / "solver_bundle" / "items_private_sample.jsonl").exists()
                 )
+                spec = json.loads(
+                    (design / "benchmark_spec.json").read_text(encoding="utf-8")
+                )
+                if round_index == 0:
+                    self.assertEqual(spec["feedback_debrief_count"], 0)
+                else:
+                    self.assertGreater(spec["feedback_debrief_count"], 0)
+
+        round_zero = next(
+            snapshot
+            for snapshot in self.controller.snapshots
+            if snapshot.creator == self.cohort[0] and snapshot.round_index == 0
+        )
+        public_feedback = self.controller._feedback(round_zero)
+        self.assertLessEqual(len(public_feedback["solver_debriefs"]), 150)
+        self.assertLessEqual(
+            len(canonical_json(public_feedback["solver_debriefs"])),
+            48 * 1024,
+        )
 
         for identity in self.cohort:
             chain = [
@@ -343,6 +372,9 @@ class TestEndStateTournament(unittest.TestCase):
                 if self.calls <= 2:
                     raise ProviderFailure(f"fixture provider failure {self.calls}")
                 return self.delegate.solve(*args, **kwargs)
+
+            def take_debrief(self):
+                return self.delegate.take_debrief()
 
         manifest = replace(
             self.manifest,

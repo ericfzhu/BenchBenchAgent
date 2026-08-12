@@ -1,6 +1,6 @@
 # BBA protocol specification
 
-This document gives the normative rules for BBA protocol version `bba.epoch.v4`.
+This document gives the normative rules for BBA protocol version `bba.epoch.v5`.
 The word `must` identifies a required rule.
 
 ## 1. Purpose
@@ -123,6 +123,14 @@ Each invocation trace must contain these items:
 - Final status
 
 The public trace must not contain prompts or tool arguments.
+
+Each successful solver attempt must submit a structured debrief after it locks
+all predictions. The debrief must contain one record for each item. Each record
+must contain confidence, approach tags, public evidence references, a concise
+justification, uncertainties, and missing information. A debrief cannot change
+a prediction. BBA must store the debrief as immutable evidence. BBA must add a
+bounded, correctness-annotated public debrief report to the next creator round.
+Hidden debriefs must not enter public feedback.
 The model response must contain token-use data.
 BBA must reject a production response that does not contain this data.
 BBA must apply each supported frozen behavior setting to the ADK request.
@@ -139,8 +147,17 @@ Round 0 is the blind round.
 The creator receives no prior candidate feedback.
 
 Rounds 1 and 2 are repair rounds.
-The creator receives only public validation evidence and public solver failures for its prior snapshot.
+The creator receives only public validation evidence, public solver failures,
+and the bounded public debrief report for its prior snapshot.
 The creator must not receive hidden evidence.
+
+For a cohort of `N` models, the public tournament has `3N` creator invocations.
+If all designs pass validation, it has `9N²` solver cells. Each valid snapshot
+receives `N` solvers with three independent repetitions. BBA publishes a blind
+creator rank for Round 0 and a final creator rank for Round 2. The solver rank
+uses active canonical final-round benchmarks. The sealed audit then runs `3N²`
+hidden solver cells on final-round snapshots. Hidden cells test evaluator
+transfer and do not change the already frozen public ranking.
 
 The controller must store each repair as a new snapshot.
 The controller must link each repair to its parent snapshot.
@@ -283,7 +300,7 @@ Plain solver text is not a submission.
 
 The default protocol uses three repetitions for each cell.
 The controller must store item-level correctness evidence for a successful cell.
-The controller must preserve exact predictions, the candidate scorer report, the controller scorer report, and command diagnostics for each successful attempt.
+The controller must preserve exact predictions, the structured debrief, the candidate scorer report, the controller scorer report, and command diagnostics for each successful attempt.
 An independent process must be able to replay a successful score without a model call.
 
 A cell can have one of these states:
@@ -470,7 +487,7 @@ An identical retry can use the existing record.
 
 Each candidate snapshot ID must bind the creator, round, and design digest.
 Each evaluation instance must bind the snapshot, design, seed, item count, and instance digest.
-Each solver cell must bind the epoch, snapshot, instance, solver, repetition, budget, immutable attempt list, and selected attempt.
+Each solver cell must bind the epoch, snapshot, instance, solver, repetition, budget, immutable attempt list, selected attempt, prediction digest, and debrief digest.
 Each registry record must contain the digest of the prior registry record.
 
 An implementation conforms to this protocol only if it passes the deterministic end-to-end test and all security boundary tests.

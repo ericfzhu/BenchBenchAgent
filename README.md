@@ -11,7 +11,7 @@ BBA makes a creator-by-solver score matrix.
 BBA also makes separate creator and solver ranks.
 An independent reviewer must approve a benchmark before BBA adds it to the canonical registry.
 A sealed audit tests the public evaluator after the public epoch is closed.
-Version `0.8.1` runs the hidden experiment from committed local material.
+Version `0.9.0` runs the hidden experiment from committed local material.
 Paid Vertex and full production acceptance evidence are still required.
 See the [implementation status](docs/implementation-status.md) before you run a production epoch.
 
@@ -145,6 +145,14 @@ Inspect saved progress at any time:
 ```
 
 The public run has three creator rounds.
+Each cohort model creates one benchmark snapshot in each round.
+Each valid snapshot receives three runs from every public solver.
+With the current 12-model cohort, the planned public run has 36 creator
+invocations and 1,296 solver cells if all designs pass validation.
+The sealed audit later adds 432 hidden solver cells on final-round snapshots.
+It validates the evaluator and does not change the frozen public ranks.
+Every successful solver cell locks its predictions and then submits a structured debrief.
+The next creator round receives a bounded public feedback report with correctness labels.
 In each round, BBA freezes all creator designs before it selects the round seed.
 BBA does not give the seed to a creator.
 BBA uses the seed to generate and freeze one evaluation instance from each design.

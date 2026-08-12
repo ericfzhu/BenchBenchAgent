@@ -2,8 +2,8 @@
 
 This plan closes each gap in the [implementation status](implementation-status.md).
 It started from BBA version `0.7.0` and protocol `bba.epoch.v3`.
-The work will create protocol `bba.epoch.v4` and a new evidence schema.
-BBA will not convert a version 3 epoch to version 4.
+The completed work now uses protocol `bba.epoch.v5` and its evidence schema.
+BBA does not convert an older epoch to version 5.
 
 The protocol specification remains the normative source.
 Update the protocol before code changes implement a new rule.
@@ -24,7 +24,7 @@ The completed system must obey these limits:
 
 ## Protocol decisions
 
-Freeze these decisions in protocol version 4 before other implementation work starts.
+Freeze these decisions in the current protocol before other implementation work starts.
 
 1. An incomplete creator row has a published status but has no rank. Its `rank` value is null. BBA excludes it from official creator and solver aggregates.
 2. BBA retries only `timeout` and `provider_error` results. The frozen policy permits three attempts. BBA does not retry a parse error, partial prediction, scorer error, invalid bundle, or successful attempt.
@@ -41,7 +41,7 @@ Freeze these decisions in protocol version 4 before other implementation work st
 
 ```mermaid
 flowchart TD
-    A["Create version 4 epoch"] --> B["Run public creator and solver tournament"]
+    A["Create current-protocol epoch"] --> B["Run public creator and solver tournament"]
     B --> C["Complete and freeze signed human reviews"]
     C --> D["Build and freeze public audit population"]
     D --> E["Close public epoch"]
@@ -56,32 +56,32 @@ flowchart TD
 Each stage writes immutable evidence before it marks local work as complete.
 The resume command uses that evidence as the source of truth.
 
-## Milestone 0: Freeze version 4 contracts
+## Milestone 0: Freeze protocol contracts
 
 ### Implementation
 
 - Update `docs/protocol.md` with the ten protocol decisions in this plan.
-- Add version 4 types to `bba/protocol.py`.
+- Add the current protocol types to `bba/protocol.py`.
 - Add an immutable `SolverAttempt` contract.
 - Change `SolverCell` to contain attempt references and one selected attempt reference.
 - Add structured contracts for reviewer findings, evaluator identity, hidden solver identity, dependency environment, and holdout retirement.
 - Define the composite and hidden-only target formulas in the protocol.
 - Define all audit component weights and decision thresholds in the manifest.
-- Remove the version 3 manual-score audit command from the version 4 CLI.
+- Remove the obsolete manual-score audit command from the CLI.
 - Make a version mismatch stop with a clear error.
 
 ### Verification
 
-- Add round-trip tests for each version 4 record.
+- Add round-trip tests for each current record.
 - Add tests that reject an unknown field, a missing field, a bad digest, and a wrong schema version.
 - Add tests for all invalid `SolverAttempt` and `SolverCell` state combinations.
-- Add a test that proves a version 3 epoch cannot run with a version 4 controller.
+- Add a test that proves an older epoch cannot run with the current controller.
 - Add a test that checks the protocol version in the package, CLI, manifest, and documents.
 
 ### Exit gate
 
 The protocol and schema have no open policy conflict.
-All later milestones use only the version 4 contracts.
+All later milestones use only the current contracts.
 
 ## Milestone 1: Preserve and replay solver evidence
 
@@ -181,7 +181,7 @@ Use small modules with one owner for each evidence rule.
 
 | Area | Existing or new code |
 | --- | --- |
-| Version 4 records | Update `bba/protocol.py` and record parsers. |
+| Current records | Update `bba/protocol.py` and record parsers. |
 | Immutable artifacts and replay | Update `bba/evidence.py`; add `bba/replay.py`. |
 | Attempts, retry, resume, and rank | Update `bba/state.py`, `bba/tournament.py`, and `bba/scoring.py`. |
 | Human review and trust | Update `bba/registry.py`; add `bba/review.py`. |

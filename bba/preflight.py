@@ -38,13 +38,16 @@ def run_preflight(
             )
             items = ({"id": "preflight-item", "answer_hint": 1},)
             predictions = backend.solve(identity, bundle, items, 0, manifest)
+            debrief = backend.take_debrief()
             trace = backend.take_trace()
         if predictions != [{"id": "preflight-item", "answer": 1}]:
             raise RuntimeError(f"model did not complete the preflight tool contract: {identity.artifact_id}")
+        if debrief is None or tuple(item.item_id for item in debrief.items) != ("preflight-item",):
+            raise RuntimeError(f"model did not return a valid solver debrief: {identity.artifact_id}")
         if trace is None or not trace.usage_metadata_complete:
             raise RuntimeError(f"model did not return complete usage metadata: {identity.artifact_id}")
-        if "submit_predictions" not in trace.tool_calls:
-            raise RuntimeError(f"model did not use function calling: {identity.artifact_id}")
+        if not {"submit_predictions", "submit_debrief"}.issubset(trace.tool_calls):
+            raise RuntimeError(f"model did not complete both solver tool contracts: {identity.artifact_id}")
         if trace.identity != identity:
             raise RuntimeError(f"preflight response identity mismatch: {identity.artifact_id}")
         returned_versions = tuple(trace.response_model_versions)

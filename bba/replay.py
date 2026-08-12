@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 from bba.evidence import EvidenceStore, file_digest, read_json
-from bba.protocol import CellState, ScoreSummary, canonical_json
+from bba.protocol import CellState, ScoreSummary, canonical_json, solver_debrief_from_mapping
 from bba.validator import read_jsonl_strict, validate_answer_rows
 
 
@@ -27,6 +27,10 @@ def replay_solver_attempt(
     predictions_path = evidence.root / attempt.evidence_files["predictions"]
     if file_digest(predictions_path) != attempt.prediction_digest:
         raise ValueError("stored predictions do not match the prediction digest")
+    debrief_path = evidence.root / attempt.evidence_files["debrief"]
+    if file_digest(debrief_path) != attempt.debrief_digest:
+        raise ValueError("stored debrief does not match the debrief digest")
+    debrief = solver_debrief_from_mapping(read_json(debrief_path))
     controller_report = read_json(
         evidence.root / attempt.evidence_files["controller_scorer_report"]
     )
@@ -48,6 +52,8 @@ def replay_solver_attempt(
     )
     gold_ids = {row["id"] for row in gold}
     validate_answer_rows(predictions, len(gold), expected_ids=gold_ids)
+    if {item.item_id for item in debrief.items} != gold_ids:
+        raise ValueError("stored debrief IDs do not match the frozen instance")
     gold_map = {row["id"]: row["answer"] for row in gold}
     pred_map = {row["id"]: row["answer"] for row in predictions}
     per_item = {
@@ -76,6 +82,7 @@ def replay_solver_attempt(
         "instance_digest": instance.instance_digest,
         "score": summary,
         "per_item": per_item,
+        "debrief_digest": attempt.debrief_digest,
         "model_call_used": False,
         "verified": True,
     }
