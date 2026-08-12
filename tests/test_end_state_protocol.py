@@ -1,6 +1,7 @@
 """Contract, sandbox, validation, registry, and BBB audit tests."""
 
 import json
+import shutil
 import tempfile
 import unittest
 from dataclasses import replace
@@ -9,7 +10,7 @@ from pathlib import Path
 from bba.audit import DefectPair, audit_evaluator
 from bba.catalog import CATALOG_VERSION, GCP_LOCATION, SERVERLESS_COHORT
 from bba.damage import create_damage_variants
-from bba.evidence import EvidenceStore
+from bba.evidence import EvidenceStore, tree_digest
 from bba.protocol import (
     AuditStatus,
     CellState,
@@ -55,7 +56,6 @@ def manifest(epoch_id="protocol-test"):
         catalog_version="fixture-catalog",
         gcp_project="bba-test-project",
         gcp_location="global",
-        public_seed=20260811,
         hidden_commitments={key: digest_json(value) for key, value in hidden.items()},
         creator_prompt_digest="creator-prompt",
         solver_prompt_digest="solver-prompt",
@@ -80,7 +80,6 @@ class TestEndStateProtocol(unittest.TestCase):
                 catalog_version="fixture-catalog",
                 gcp_project="bba-test-project",
                 gcp_location="global",
-                public_seed=1,
                 hidden_commitments={key: "a" * 64 for key in ("hidden_solver_panel", "hidden_seeds", "audit_policy")},
                 creator_prompt_digest="d",
                 solver_prompt_digest="e",
@@ -111,7 +110,8 @@ class TestEndStateProtocol(unittest.TestCase):
     def test_non_success_cell_cannot_carry_score(self):
         with self.assertRaises(ValueError):
             SolverCell(
-                candidate_digest="candidate",
+                snapshot_id="candidate",
+                instance_digest="instance",
                 solver=cohort()[0],
                 repetition=0,
                 state=CellState.TIMEOUT,
@@ -126,7 +126,7 @@ class TestEndStateProtocol(unittest.TestCase):
             original = path.read_bytes()
             self.assertEqual(store.freeze_manifest(manifest()), path)
             with self.assertRaises(ValueError):
-                store.freeze_manifest(replace(manifest(), public_seed=99))
+                store.freeze_manifest(replace(manifest(), evaluator_version="different"))
             self.assertEqual(path.read_bytes(), original)
             first = store.append_registry_record("history", {"status": "first"})
             second = store.append_registry_record("history", {"status": "second"})
@@ -141,14 +141,37 @@ class TestEndStateProtocol(unittest.TestCase):
             candidate = Path(temporary) / "candidate"
             candidate.mkdir()
             ExecutableCreatorFixture(0.4).build(cohort()[0], 0, candidate, {}, None, manifest())
-            valid = validator.validate(candidate, "candidate-digest", manifest().public_seed)
+            valid = validator.validate(
+                candidate, "candidate", tree_digest(candidate), 20260811
+            )
             self.assertTrue(valid.passed, valid.errors)
             (candidate / "generator.py").write_text(
                 '"""BBA_TEST_FIXTURE no-op."""\n', encoding="utf-8"
             )
-            invalid = validator.validate(candidate, "broken-digest", manifest().public_seed)
+            invalid = validator.validate(
+                candidate, "broken", tree_digest(candidate), 20260811
+            )
             self.assertFalse(invalid.passed)
             self.assertTrue(any("missing generated" in error or "gold_private" in error for error in invalid.errors))
+
+    def test_invalid_validation_does_not_claim_an_instance(self):
+        sandbox = LocalFixtureSandbox(acknowledge_unsafe=True)
+        validator = PackageValidator(sandbox)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            design = root / "design"
+            design.mkdir()
+            ExecutableCreatorFixture(0.4).build(
+                cohort()[0], 0, design, {}, None, manifest()
+            )
+            (design / "generator.py").write_text(
+                '"""BBA_TEST_FIXTURE no-op."""\n', encoding="utf-8"
+            )
+            record = validator.validate(
+                design, "invalid-snapshot", tree_digest(design), 20260811
+            )
+            self.assertFalse(record.passed)
+            self.assertIsNone(record.instance_digest)
 
     def test_all_controlled_damage_variants_fail_public_validation(self):
         sandbox = LocalFixtureSandbox(acknowledge_unsafe=True)
@@ -158,14 +181,36 @@ class TestEndStateProtocol(unittest.TestCase):
             candidate = root / "candidate"
             candidate.mkdir()
             ExecutableCreatorFixture(0.4).build(cohort()[0], 0, candidate, {}, None, manifest())
-            variants = create_damage_variants(candidate, root / "variants")
+            instance = root / "instance"
+            record = validator.validate(
+                candidate, "base", tree_digest(candidate), 20260811, instance
+            )
+            self.assertTrue(record.passed, record.errors)
+            materialized = root / "materialized"
+            shutil.copytree(candidate, materialized)
+            shutil.copytree(
+                instance / "solver_bundle",
+                materialized / "solver_bundle",
+                dirs_exist_ok=True,
+            )
+            shutil.copy2(instance / "gold_private_sample.jsonl", materialized)
+            variants = create_damage_variants(materialized, root / "variants")
             self.assertEqual(
                 set(variants),
                 {"corrupted_key", "duplicate_item", "truncated", "answer_leak", "noop_generator"},
             )
             for name, path in variants.items():
-                record = validator.validate(path, name, manifest().public_seed)
-                self.assertFalse(record.passed, f"{name} unexpectedly passed")
+                if name == "noop_generator":
+                    (path / "gold_private_sample.jsonl").unlink()
+                    (path / "solver_bundle" / "items_private_sample.jsonl").unlink()
+                    (path / "solver_bundle" / "SOLVER_MANIFEST.json").unlink()
+                    record = validator.validate(
+                        path, name, tree_digest(path), 20260811
+                    )
+                    self.assertFalse(record.passed)
+                else:
+                    with self.assertRaises(ValueError):
+                        validator.validate_materialized_instance(candidate, path)
 
     def test_secure_sandbox_is_enforced_or_fails_closed(self):
         sandbox = SecureSandbox()

@@ -94,7 +94,6 @@ class TestAdkRuntime(unittest.TestCase):
             catalog_version="test-catalog",
             gcp_project="bba-test-project",
             gcp_location="global",
-            public_seed=42,
             hidden_commitments={
                 "hidden_solver_panel": digest_json(["sealed-solver"]),
                 "hidden_seeds": digest_json([43]),
@@ -172,6 +171,24 @@ class TestAdkRuntime(unittest.TestCase):
         self.assertTrue(trace.usage_metadata_complete)
         self.assertEqual(trace.total_tokens, 6)
         self.assertTrue(trace.final_response_digest)
+
+    def test_creator_message_does_not_contain_an_evaluation_seed(self):
+        model = ScriptedLlm(model="scripted-seed-blind", responses=[
+            _tool_call("finish-1", "finish_candidate", {}),
+            _final(),
+        ])
+        backend = AdkCreatorBackend(model)
+        with tempfile.TemporaryDirectory() as temporary:
+            backend.build(
+                self.identity,
+                0,
+                Path(temporary),
+                {},
+                None,
+                self.manifest,
+            )
+        self.assertNotIn("public_seed", CREATOR_INSTRUCTION)
+        self.assertFalse(hasattr(self.manifest, "public_seed"))
 
     def test_solver_requires_explicit_complete_tool_submission(self):
         rows = [

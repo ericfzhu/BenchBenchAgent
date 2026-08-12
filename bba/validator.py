@@ -23,14 +23,18 @@ REQUIRED_ROOT = (
     "generator.py",
     "verifier.py",
     "scorer.py",
-    "gold_private_sample.jsonl",
     "validation_report.md",
     "failure_modes.md",
     "requirements.lock",
 )
-REQUIRED_PUBLIC = (
+REQUIRED_GENERATED_PUBLIC = (
     "SOLVER_MANIFEST.json",
     "items_private_sample.jsonl",
+)
+PROHIBITED_DESIGN_OUTPUTS = (
+    "gold_private_sample.jsonl",
+    "solver_bundle/SOLVER_MANIFEST.json",
+    "solver_bundle/items_private_sample.jsonl",
 )
 
 
@@ -175,7 +179,9 @@ class PackageValidator:
         self.timeout_seconds = timeout_seconds
 
     def _generate(self, package: Path, workspace: Path, seed: int) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
-        shutil.rmtree(package / "solver_bundle", ignore_errors=True)
+        bundle = package / "solver_bundle"
+        (bundle / "SOLVER_MANIFEST.json").unlink(missing_ok=True)
+        (bundle / "items_private_sample.jsonl").unlink(missing_ok=True)
         (package / "gold_private_sample.jsonl").unlink(missing_ok=True)
         result = self.sandbox.run_python(
             package / "generator.py",
@@ -188,7 +194,7 @@ class PackageValidator:
             raise ValueError(f"generator failed: {result.stderr[-1000:]}")
         validate_artifact_tree(package)
         bundle = package / "solver_bundle"
-        for required in REQUIRED_PUBLIC:
+        for required in REQUIRED_GENERATED_PUBLIC:
             if not (bundle / required).is_file():
                 raise ValueError(f"missing generated public artifact: solver_bundle/{required}")
         if not any((bundle / name).is_file() for name in ("README.md", "solver_packet.md")):
@@ -240,46 +246,101 @@ class PackageValidator:
             if summary.correct != expected:
                 raise ValueError(f"control score was {summary.correct}/{summary.total}, expected {expected}/{self.sample_count}")
 
-    def validate(self, package_root: Path, candidate_digest: str, public_seed: int) -> ValidationRecord:
+    def validate_materialized_instance(
+        self,
+        design_root: Path,
+        instance_root: Path,
+    ) -> None:
+        """Check one frozen instance against its frozen benchmark design."""
+
+        with tempfile.TemporaryDirectory(prefix="bba-instance-check-") as temporary:
+            workspace = Path(temporary)
+            package = workspace / "candidate"
+            shutil.copytree(Path(design_root).resolve(), package)
+            instance = Path(instance_root).resolve()
+            shutil.copytree(
+                instance / "solver_bundle",
+                package / "solver_bundle",
+                dirs_exist_ok=True,
+            )
+            shutil.copy2(instance / "gold_private_sample.jsonl", package)
+            validate_artifact_tree(package)
+            try:
+                gold = read_jsonl_strict(package / "gold_private_sample.jsonl")
+                items = read_jsonl_strict(
+                    package / "solver_bundle" / "items_private_sample.jsonl"
+                )
+            except (FileNotFoundError, OSError) as exc:
+                raise ValueError("materialized instance is missing required output") from exc
+            item_ids = validate_item_rows(items, self.sample_count)
+            validate_answer_rows(gold, self.sample_count, expected_ids=item_ids)
+            leaks = public_bundle_leaks(package / "solver_bundle", gold)
+            if leaks:
+                raise ValueError("public answer leakage: " + ", ".join(leaks[:10]))
+            self._score_controls(package, workspace, gold, items)
+
+    def validate(
+        self,
+        design_root: Path,
+        snapshot_id: str,
+        design_digest: str,
+        evaluation_seed: int,
+        instance_output: Optional[Path] = None,
+    ) -> ValidationRecord:
         checks: Dict[str, bool] = {}
         errors: List[str] = []
         same_digest: Optional[str] = None
         different_digest: Optional[str] = None
+        frozen_instance_digest: Optional[str] = None
         try:
-            package_root = Path(package_root).resolve()
-            validate_artifact_tree(package_root)
+            design_root = Path(design_root).resolve()
+            validate_artifact_tree(design_root)
             checks["artifact_tree"] = True
-            missing = [name for name in REQUIRED_ROOT if not (package_root / name).is_file()]
+            missing = [name for name in REQUIRED_ROOT if not (design_root / name).is_file()]
             if missing:
                 raise ValueError(f"missing required root files: {missing}")
-            validate_lockfile(package_root / "requirements.lock")
-            spec = json.loads((package_root / "benchmark_spec.json").read_text(encoding="utf-8"))
+            present_outputs = [name for name in PROHIBITED_DESIGN_OUTPUTS if (design_root / name).exists()]
+            if present_outputs:
+                raise ValueError(f"design contains evaluation outputs before seed selection: {present_outputs}")
+            bundle = design_root / "solver_bundle"
+            if not any((bundle / name).is_file() for name in ("README.md", "solver_packet.md")):
+                raise ValueError("design has no public solver instructions")
+            validate_lockfile(design_root / "requirements.lock")
+            spec = json.loads((design_root / "benchmark_spec.json").read_text(encoding="utf-8"))
             if not str(spec.get("capability_claim", "")).strip():
                 raise ValueError("benchmark_spec.json requires capability_claim")
-            frozen_payload = payload_digest(package_root)
-            checks["package_contract"] = True
+            checks["design_contract"] = True
 
             generated = []
-            for seed in (public_seed, public_seed, public_seed + 1):
+            first_instance: Optional[Path] = None
+            for index, seed in enumerate((evaluation_seed, evaluation_seed, evaluation_seed + 1)):
                 with tempfile.TemporaryDirectory(prefix="bba-validate-") as temporary:
                     workspace = Path(temporary)
                     package = workspace / "candidate"
-                    shutil.copytree(package_root, package)
+                    shutil.copytree(design_root, package)
                     digest, gold, items = self._generate(package, workspace, seed)
                     generated.append(digest)
-                    if seed == public_seed:
+                    if index < 2:
                         self._score_controls(package, workspace, gold, items)
+                    if index == 0 and instance_output is not None:
+                        output = Path(instance_output).resolve()
+                        output.mkdir(parents=True, exist_ok=False)
+                        shutil.copytree(package / "solver_bundle", output / "solver_bundle")
+                        shutil.copy2(package / "gold_private_sample.jsonl", output)
+                        first_instance = output
             if generated[0] != generated[1]:
                 raise ValueError("same-seed generation is nondeterministic")
             if generated[0] == generated[2]:
                 raise ValueError("designated different seeds produced identical payloads")
-            if generated[0] != frozen_payload:
-                raise ValueError("frozen package payload does not match clean regeneration")
             same_digest, different_digest = generated[0], generated[2]
+            if first_instance is not None and payload_digest(first_instance) != same_digest:
+                raise ValueError("materialized evaluation instance changed after validation")
+            if first_instance is not None:
+                frozen_instance_digest = tree_digest(first_instance)
             checks.update({
                 "deterministic_generation": True,
                 "seed_variation": True,
-                "frozen_payload_match": True,
+                "post_freeze_generation": True,
                 "jsonl_contracts": True,
                 "no_public_leakage": True,
                 "gold_control": True,
@@ -289,11 +350,12 @@ class PackageValidator:
         except Exception as exc:  # validation must return evidence, not erase the failure
             errors.append(str(exc))
         return ValidationRecord(
-            candidate_digest=candidate_digest,
+            snapshot_id=snapshot_id,
+            design_digest=design_digest,
             passed=not errors,
-            public_seed=public_seed,
+            evaluation_seed=evaluation_seed,
             checks=checks,
             errors=tuple(errors),
-            generated_payload_digest=same_digest,
+            instance_digest=frozen_instance_digest or same_digest,
             alternate_payload_digest=different_digest,
         )

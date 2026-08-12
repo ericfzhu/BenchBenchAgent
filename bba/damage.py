@@ -18,7 +18,7 @@ def _copy(source: Path, destination: Path) -> Path:
 
 
 def create_damage_variants(source: Path, output_root: Path) -> Dict[str, Path]:
-    """Create immutable matched variants without modifying the base package."""
+    """Create immutable matched variants from a materialized evaluation instance."""
 
     source = Path(source).resolve()
     output_root = Path(output_root).resolve()
@@ -58,4 +58,5 @@ def create_damage_variants(source: Path, output_root: Path) -> Dict[str, Path]:
         encoding="utf-8",
     )
     variants["noop_generator"] = noop
+
     return variants

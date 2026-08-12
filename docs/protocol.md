@@ -1,6 +1,6 @@
 # BBA protocol specification
 
-This document gives the normative rules for BBA protocol version `bba.epoch.v2`.
+This document gives the normative rules for BBA protocol version `bba.epoch.v3`.
 The word `must` identifies a required rule.
 
 ## 1. Purpose
@@ -20,13 +20,15 @@ BBA also publishes creator ranks, solver ranks, candidate status, and immutable 
 
 **Epoch** means one frozen evaluation run.
 
-**Creator** means a model configuration that makes a candidate package.
+**Creator** means a model configuration that makes a benchmark design.
 
 **Solver** means a model configuration that receives only a solver bundle.
 
-**Candidate** means one benchmark package from one creator round.
+**Candidate** means one frozen benchmark design from one creator round.
 
 **Snapshot** means one immutable copy of a candidate.
+
+**Evaluation instance** means the items, private gold, and solver bundle that BBA generates from one frozen design and one controller-selected seed.
 
 **Cell** means one solver run against one candidate.
 
@@ -50,7 +52,7 @@ An update to the cohort must create a new catalog version.
 
 The controller must get the Google Cloud project from Application Default Credentials.
 The controller must use the `global` Google Cloud location for this catalog version.
-The controller must create the public seed and hidden material.
+The controller must create the hidden material.
 The controller must generate the manifest from these BBA-owned values.
 
 The controller must freeze the manifest before the first creator run.
@@ -61,7 +63,6 @@ The manifest must contain these items:
 - The model catalog version
 - The Google Cloud project and location
 - The model cohort
-- The public seed
 - The creator and solver prompt digests
 - The evaluator version
 - The resource limits
@@ -134,9 +135,14 @@ The controller must store each repair as a new snapshot.
 The controller must link each repair to its parent snapshot.
 The controller must not change an old snapshot.
 
-## 6. Candidate package
+The controller must finish and freeze every design in a round before it selects that round's evaluation seed.
+The creator must not receive that seed.
+BBA must use one evaluation seed for all designs in the same round.
+BBA must store the seed and the complete frozen snapshot set as immutable round evidence.
 
-A candidate must contain these root files:
+## 6. Benchmark design and evaluation instance
+
+A benchmark design must contain these root files:
 
 ```text
 README.md
@@ -144,23 +150,21 @@ benchmark_spec.json
 generator.py
 verifier.py
 scorer.py
-gold_private_sample.jsonl
 validation_report.md
 failure_modes.md
 requirements.lock
 ```
 
-A candidate must contain this public directory:
+A benchmark design must contain this public directory:
 
 ```text
 solver_bundle/
-  SOLVER_MANIFEST.json
-  items_private_sample.jsonl
   README.md or solver_packet.md
 ```
 
-The candidate can contain other public assets in `solver_bundle/`.
+The design can contain other public assets in `solver_bundle/`.
 The public bundle must not contain private gold, an answer map, a verifier, a scorer, or hidden audit data.
+The design must not contain `gold_private_sample.jsonl`, generated items, or a generated solver manifest.
 
 The generator must accept this interface:
 
@@ -192,6 +196,20 @@ It must contain `total`, `correct`, and `accuracy`.
 The lock file must use exact package versions.
 It must not contain a URL or a source-control dependency.
 
+After the design freezes, BBA runs the generator with the round seed.
+BBA stores the result as one immutable evaluation instance.
+The instance must contain these generated files:
+
+```text
+gold_private_sample.jsonl
+solver_bundle/
+  SOLVER_MANIFEST.json
+  items_private_sample.jsonl
+  README.md or solver_packet.md
+```
+
+The instance record must bind the snapshot ID, design digest, seed, item count, and instance digest.
+
 ## 7. Sandbox
 
 BBA must treat creator code as untrusted code.
@@ -222,12 +240,12 @@ The controller must do these checks:
 4. Check all required files.
 5. Check the exact dependency pins.
 6. Check that the specification names a capability.
-7. Regenerate the package in a clean directory.
+7. Generate an evaluation instance in a clean directory after design freeze.
 8. Generate the same seed two times.
 9. Require identical payloads for the two same-seed runs.
 10. Generate one designated different seed.
 11. Require a different payload for the different seed.
-12. Require the clean payload to equal the frozen payload.
+12. Freeze the first valid generated payload as the evaluation instance.
 13. Check the JSON Lines schemas and item IDs.
 14. Check the public bundle for answer leakage.
 15. Require private gold to score 30 out of 30.
@@ -394,8 +412,9 @@ BBA must publish each manifest, snapshot, and evidence record at one immutable p
 BBA must refuse to overwrite immutable evidence.
 An identical retry can use the existing record.
 
-Each candidate snapshot ID must bind the creator, round, and package digest.
-Each solver cell must bind the epoch, candidate, solver, repetition, and budget.
+Each candidate snapshot ID must bind the creator, round, and design digest.
+Each evaluation instance must bind the snapshot, design, seed, item count, and instance digest.
+Each solver cell must bind the epoch, snapshot, instance, solver, repetition, and budget.
 Each registry record must contain the digest of the prior registry record.
 
 An implementation conforms to this protocol only if it passes the deterministic end-to-end test and all security boundary tests.

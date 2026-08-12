@@ -32,7 +32,8 @@ def _verify_package(args: argparse.Namespace) -> int:
     sandbox = SecureSandbox()
     validator = PackageValidator(sandbox, sample_count=args.sample_count, timeout_seconds=args.timeout)
     package = Path(args.package).resolve()
-    record = validator.validate(package, tree_digest(package), args.seed)
+    digest = tree_digest(package)
+    record = validator.validate(package, "standalone", digest, args.seed)
     _print_json(record)
     return 0 if record.passed else 1
 
@@ -75,6 +76,11 @@ def _saved_status(
         "snapshots": sum(
             1
             for path in (root / "candidates").glob("*/snapshot.json")
+            if not path.parent.name.startswith(".")
+        ),
+        "instances": sum(
+            1
+            for path in (root / "instances").glob("*/instance.json")
             if not path.parent.name.startswith(".")
         ),
         "validations": len(list((root / "validations").glob("*.json"))),
@@ -191,7 +197,7 @@ def _epoch_candidates(args: argparse.Namespace) -> int:
                 "snapshot_id": snapshot.snapshot_id,
                 "creator": snapshot.creator.artifact_id,
                 "round": snapshot.round_index,
-                "package_digest": snapshot.package_digest,
+                "design_digest": snapshot.design_digest,
                 "parent_snapshot_id": snapshot.parent_snapshot_id,
                 "validation_passed": (
                     controller.validations[snapshot.snapshot_id].passed
@@ -199,7 +205,12 @@ def _epoch_candidates(args: argparse.Namespace) -> int:
                     else None
                 ),
                 "solver_cells": len(controller.cells.get(snapshot.snapshot_id, ())),
-                "reviewed": snapshot.package_digest in controller.promotions,
+                "instance_digest": (
+                    controller.instances[snapshot.snapshot_id].instance_digest
+                    if snapshot.snapshot_id in controller.instances
+                    else None
+                ),
+                "reviewed": snapshot.design_digest in controller.promotions,
             }
             for snapshot in controller.snapshots
         ])

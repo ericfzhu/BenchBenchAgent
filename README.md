@@ -3,8 +3,9 @@
 BenchBenchAgent (BBA) tests models that make and solve executable benchmarks.
 Each model has two separate roles.
 
-- A creator makes a benchmark package.
-- A solver solves each valid benchmark package.
+- A creator makes a benchmark design and deterministic generator.
+- BBA freezes the design and then selects an evaluation seed.
+- A solver solves the generated evaluation instance.
 
 BBA makes a creator-by-solver score matrix.
 BBA also makes separate creator and solver ranks.
@@ -101,7 +102,7 @@ Create the local epoch:
 ```
 
 BBA gets the project from ADC.
-BBA creates the epoch ID, public seed, hidden seeds, audit commitments, and immutable manifest.
+BBA creates the epoch ID, hidden seeds, audit commitments, and immutable manifest.
 The command prints the new epoch ID.
 
 You can supply a readable local ID if required:
@@ -129,6 +130,9 @@ Inspect saved progress at any time:
 ```
 
 The public run has three creator rounds.
+In each round, BBA freezes all creator designs before it selects the round seed.
+BBA does not give the seed to a creator.
+BBA uses the seed to generate and freeze one evaluation instance from each design.
 Each valid snapshot receives the full blind solver panel.
 The command ends when all required public evidence exists.
 
@@ -152,7 +156,9 @@ The command returns a nonzero status if the package is not valid.
 
 BBA stores these outputs:
 
-- Immutable candidate snapshots and revision links
+- Immutable benchmark-design snapshots and revision links
+- Controller-selected round seeds
+- Immutable generated evaluation instances
 - Validation records
 - Tagged solver-cell records
 - Creator and solver ranks
@@ -179,6 +185,6 @@ A timeout or provider error is not a zero score.
 | `EvidenceStore` | Stores immutable local evidence. |
 | `AdkCreatorBackend` | Runs one creator with ADK and Vertex AI. |
 | `AdkSolverBackend` | Runs one solver with ADK and Vertex AI. |
-| `PackageValidator` | Checks a candidate package. |
+| `PackageValidator` | Checks a benchmark design and its generated instance. |
 | `SecureSandbox` | Runs generated code in a local operating-system sandbox. |
 | `PromotionRegistry` | Stores signed promotion records. |

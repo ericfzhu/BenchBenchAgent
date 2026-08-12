@@ -176,18 +176,11 @@ class ExecutableCreatorFixture:
         }
         for name, content in files.items():
             (output_dir / name).write_text(content, encoding="utf-8")
-        subprocess.run(
-            [
-                sys.executable,
-                str(output_dir / "generator.py"),
-                "--sample-count", str(manifest.thresholds.sample_count),
-                "--seed", str(manifest.public_seed),
-                "--out-dir", ".",
-            ],
-            cwd=str(output_dir),
-            check=True,
-            capture_output=True,
-            text=True,
+        bundle = output_dir / "solver_bundle"
+        bundle.mkdir()
+        (bundle / "solver_packet.md").write_text(
+            "# Arithmetic audit\nFor each row return `(a * b + c) % 997` as an integer.\n",
+            encoding="utf-8",
         )
 
 

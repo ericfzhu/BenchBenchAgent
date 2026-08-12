@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import random
+import secrets
 import shutil
 import statistics
 import tempfile
@@ -19,6 +20,7 @@ from bba.protocol import (
     CandidateSnapshot,
     CellState,
     ExperimentManifest,
+    EvaluationInstance,
     ModelIdentity,
     PromotionDecision,
     PromotionRecord,
@@ -95,6 +97,8 @@ class TournamentController:
             if prompt_digest is not None and prompt_digest != manifest.solver_prompt_digest:
                 raise ValueError("solver backend prompt does not match the frozen manifest")
         self.snapshots: List[CandidateSnapshot] = []
+        self.instances: Dict[str, EvaluationInstance] = {}
+        self.round_seeds: Dict[int, int] = {}
         self.validations: Dict[str, Any] = {}
         self.cells: Dict[str, List[SolverCell]] = {}
         self.promotions: Dict[str, PromotionRecord] = {}
@@ -127,8 +131,8 @@ class TournamentController:
         return {
             "manifest_digest": self.manifest.digest,
             "snapshot_id": snapshot.snapshot_id,
-            "candidate_digest": snapshot.package_digest,
-            "public_seed": self.manifest.public_seed,
+            "design_digest": snapshot.design_digest,
+            "evaluation_seed": self.round_seeds[snapshot.round_index],
         }
 
     def _solver_work_id(
@@ -147,7 +151,8 @@ class TournamentController:
     ) -> Dict[str, Any]:
         return {
             "epoch_digest": self.manifest.digest,
-            "candidate_digest": snapshot.package_digest,
+            "snapshot_id": snapshot.snapshot_id,
+            "instance_digest": self.instances[snapshot.snapshot_id].instance_digest,
             "solver": to_primitive(solver),
             "repetition": repetition,
             "budget": to_primitive(self.manifest.budget),
@@ -211,6 +216,32 @@ class TournamentController:
                 file_digest(metadata_path),
             )
 
+        seed_root = self.evidence.epoch_root(self.manifest.epoch_id) / "round-seeds"
+        for path in sorted(seed_root.glob("round-*.json")):
+            value = read_json(path)
+            round_index = int(value["round"])
+            seed = int(value["seed"])
+            if value.get("manifest_digest") != self.manifest.digest:
+                raise ValueError(f"round seed manifest mismatch: {path.name}")
+            expected_snapshot_ids = sorted(
+                snapshot.snapshot_id
+                for snapshot in self.snapshots
+                if snapshot.round_index == round_index
+            )
+            if value.get("snapshot_ids") != expected_snapshot_ids:
+                raise ValueError(f"round seed snapshot set mismatch: {path.name}")
+            self.round_seeds[round_index] = seed
+
+        for instance in self.evidence.load_instances(self.manifest.epoch_id):
+            snapshot = snapshot_by_id.get(instance.snapshot_id)
+            if snapshot is None or instance.design_digest != snapshot.design_digest:
+                raise ValueError(f"evaluation instance has no matching design: {instance.instance_id}")
+            if self.round_seeds.get(snapshot.round_index) != instance.seed:
+                raise ValueError(f"evaluation instance has the wrong round seed: {instance.instance_id}")
+            if snapshot.snapshot_id in self.instances:
+                raise ValueError(f"multiple evaluation instances exist: {snapshot.snapshot_id}")
+            self.instances[snapshot.snapshot_id] = instance
+
         validation_root = self.evidence.epoch_root(self.manifest.epoch_id) / "validations"
         for path in sorted(validation_root.glob("*.json")):
             snapshot_id = path.stem
@@ -220,8 +251,18 @@ class TournamentController:
             if snapshot is None:
                 raise ValueError(f"validation has no candidate snapshot: {snapshot_id}")
             record = validation_record_from_mapping(read_json(path))
-            if record.candidate_digest != snapshot.package_digest:
+            instance = self.instances.get(snapshot_id)
+            if (
+                record.snapshot_id != snapshot_id
+                or record.design_digest != snapshot.design_digest
+            ):
                 raise ValueError(f"validation digest mismatch: {snapshot_id}")
+            if record.passed and (
+                instance is None or record.instance_digest != instance.instance_digest
+            ):
+                raise ValueError(f"passed validation has no matching instance: {snapshot_id}")
+            if not record.passed and instance is not None:
+                raise ValueError(f"invalid design has an evaluation instance: {snapshot_id}")
             self.validations[snapshot_id] = record
             self.state.reconcile_success(
                 self.manifest.epoch_id,
@@ -238,7 +279,8 @@ class TournamentController:
             matches = [
                 snapshot
                 for snapshot in self.snapshots
-                if snapshot.package_digest == cell.candidate_digest
+                if snapshot.snapshot_id == cell.snapshot_id
+                and self.instances[snapshot.snapshot_id].instance_digest == cell.instance_digest
                 and path.name
                 == f"{self._cell_record_id(snapshot, cell.solver, cell.repetition)}.json"
             ]
@@ -267,7 +309,7 @@ class TournamentController:
         promotion_root = self.evidence.epoch_root(self.manifest.epoch_id) / "promotions"
         for path in sorted(promotion_root.glob("*.json")):
             record = promotion_record_from_mapping(read_json(path))
-            self.promotions[record.candidate_digest] = record
+            self.promotions[record.design_digest] = record
 
         audit_population_path = self.evidence.record_path(
             self.manifest.epoch_id, "audit", "public-population"
@@ -309,6 +351,12 @@ class TournamentController:
             if validation is None:
                 return False
             if validation.passed:
+                instance = self.instances.get(snapshot.snapshot_id)
+                if (
+                    instance is None
+                    or validation.instance_digest != instance.instance_digest
+                ):
+                    return False
                 expected_cells = (
                     len(self.manifest.cohort)
                     * self.manifest.thresholds.solver_repetitions
@@ -322,6 +370,7 @@ class TournamentController:
         result.update(
             {
                 "snapshots": len(self.snapshots),
+                "instances": len(self.instances),
                 "validations": len(self.validations),
                 "solver_cells": sum(len(items) for items in self.cells.values()),
                 "promotions": len(self.promotions),
@@ -336,6 +385,29 @@ class TournamentController:
             if snapshot.snapshot_id == snapshot_id:
                 return snapshot
         raise KeyError(f"candidate snapshot does not exist: {snapshot_id}")
+
+    def _freeze_round_seed(self, round_index: int) -> int:
+        existing = self.round_seeds.get(round_index)
+        if existing is not None:
+            return existing
+        round_snapshots = [
+            snapshot for snapshot in self.snapshots if snapshot.round_index == round_index
+        ]
+        if len(round_snapshots) != len(self.manifest.cohort):
+            raise RuntimeError("BBA selects a round seed only after every design is frozen")
+        seed = secrets.randbits(63)
+        record = {
+            "schema_version": 1,
+            "manifest_digest": self.manifest.digest,
+            "round": round_index,
+            "seed": seed,
+            "snapshot_ids": sorted(snapshot.snapshot_id for snapshot in round_snapshots),
+        }
+        self.evidence.publish_record_idempotent(
+            self.manifest.epoch_id, "round-seeds", f"round-{round_index}", record
+        )
+        self.round_seeds[round_index] = seed
+        return seed
 
     def _publish_agent_trace(self, record_id: str, backend: Any) -> None:
         take_trace = getattr(backend, "take_trace", None)
@@ -359,14 +431,16 @@ class TournamentController:
         solver: ModelIdentity,
         repetition: int,
     ) -> SolverCell:
-        package = Path(snapshot.package_path)
+        design = Path(snapshot.design_path)
+        instance = self.instances[snapshot.snapshot_id]
+        instance_root = Path(instance.instance_path)
         invocation = self._solver_payload(snapshot, solver, repetition)
         invocation_digest = digest_json(invocation)
         try:
             with tempfile.TemporaryDirectory(prefix="bba-solver-cell-") as temporary:
                 cell_root = Path(temporary)
                 public_bundle = cell_root / "solver_bundle"
-                shutil.copytree(package / "solver_bundle", public_bundle)
+                shutil.copytree(instance_root / "solver_bundle", public_bundle)
                 items = read_jsonl_strict(public_bundle / "items_private_sample.jsonl")
                 item_ids = validate_item_rows(items, self.manifest.thresholds.sample_count)
                 backend = self.solver_backends[solver.artifact_id]
@@ -396,7 +470,13 @@ class TournamentController:
                 # controller independently recomputes exact matches as a check.
                 score_workspace = cell_root / "score_workspace"
                 score_package = score_workspace / "candidate"
-                shutil.copytree(package, score_package)
+                shutil.copytree(design, score_package)
+                shutil.copytree(
+                    instance_root / "solver_bundle",
+                    score_package / "solver_bundle",
+                    dirs_exist_ok=True,
+                )
+                shutil.copy2(instance_root / "gold_private_sample.jsonl", score_package)
                 shutil.copy2(prediction_path, score_package / "predictions.jsonl")
                 score_output = score_package / ".controller_solver_score.json"
                 result = self.validator.sandbox.run_python(
@@ -414,7 +494,7 @@ class TournamentController:
                     raise RuntimeError(result.stderr[-1000:] or "creator scorer did not publish a report")
                 reported = json.loads(score_output.read_text(encoding="utf-8"))
 
-                gold = read_jsonl_strict(package / "gold_private_sample.jsonl")
+                gold = read_jsonl_strict(instance_root / "gold_private_sample.jsonl")
                 gold_map = {row["id"]: row["answer"] for row in gold}
                 pred_map = {row["id"]: row["answer"] for row in predictions}
                 per_item = {
@@ -436,7 +516,8 @@ class TournamentController:
                 if reported_summary != summary:
                     raise RuntimeError("creator scorer disagrees with controller exact-match score")
                 return SolverCell(
-                    candidate_digest=snapshot.package_digest,
+                    snapshot_id=snapshot.snapshot_id,
+                    instance_digest=instance.instance_digest,
                     solver=solver,
                     repetition=repetition,
                     state=CellState.SUCCESS,
@@ -458,7 +539,8 @@ class TournamentController:
         except Exception as exc:
             state, error = CellState.SCORER_ERROR, str(exc)
         return SolverCell(
-            candidate_digest=snapshot.package_digest,
+            snapshot_id=snapshot.snapshot_id,
+            instance_digest=instance.instance_digest,
             solver=solver,
             repetition=repetition,
             state=state,
@@ -501,68 +583,74 @@ class TournamentController:
             (snapshot.creator.artifact_id, snapshot.round_index): snapshot
             for snapshot in self.snapshots
         }
-        feedback: Dict[str, Mapping[str, Any]] = {identity.artifact_id: {} for identity in self.manifest.cohort}
         for round_index in range(self.manifest.thresholds.rounds):
             for creator in self.manifest.cohort:
                 parent = snapshot_by_key.get((creator.artifact_id, round_index - 1))
-                if parent is not None:
-                    feedback[creator.artifact_id] = self._feedback(parent)
+                feedback = self._feedback(parent) if parent is not None else {}
                 snapshot = snapshot_by_key.get((creator.artifact_id, round_index))
-                if snapshot is None:
-                    work_id = self._creator_work_id(creator, round_index)
-                    payload = self._creator_payload(creator, round_index, parent)
-                    if not self.state.claim(
-                        self.manifest.epoch_id, work_id, "creator", payload
-                    ):
-                        raise RuntimeError(
-                            f"creator work is complete but snapshot evidence is missing: {work_id}"
-                        )
-                    backend = self.creator_backends[creator.artifact_id]
-                    with tempfile.TemporaryDirectory(prefix="bba-creator-output-") as temporary:
-                        output = Path(temporary) / "candidate"
-                        output.mkdir()
-                        try:
-                            backend.build(
-                                creator,
-                                round_index,
-                                output,
-                                feedback[creator.artifact_id],
-                                Path(parent.package_path) if parent else None,
-                                self.manifest,
-                            )
-                        except Exception as exc:
-                            self.state.fail(self.manifest.epoch_id, work_id, str(exc))
-                            self._publish_agent_trace(
-                                f"{creator.artifact_id}--round-{round_index}--failed",
-                                backend,
-                            )
-                            raise
-                        snapshot = self.evidence.freeze_candidate(
-                            self.manifest.epoch_id,
-                            output,
+                if snapshot is not None:
+                    continue
+                work_id = self._creator_work_id(creator, round_index)
+                payload = self._creator_payload(creator, round_index, parent)
+                if not self.state.claim(
+                    self.manifest.epoch_id, work_id, "creator", payload
+                ):
+                    raise RuntimeError(
+                        f"creator work is complete but snapshot evidence is missing: {work_id}"
+                    )
+                backend = self.creator_backends[creator.artifact_id]
+                with tempfile.TemporaryDirectory(prefix="bba-creator-output-") as temporary:
+                    output = Path(temporary) / "design"
+                    output.mkdir()
+                    try:
+                        backend.build(
                             creator,
                             round_index,
-                            parent_snapshot_id=parent.snapshot_id if parent else None,
+                            output,
+                            feedback,
+                            Path(parent.design_path) if parent else None,
+                            self.manifest,
                         )
+                    except Exception as exc:
+                        self.state.fail(self.manifest.epoch_id, work_id, str(exc))
                         self._publish_agent_trace(
-                            f"{snapshot.snapshot_id}--creator",
+                            f"{creator.artifact_id}--round-{round_index}--failed",
                             backend,
                         )
-                    metadata_path = (
-                        self.evidence.epoch_root(self.manifest.epoch_id)
-                        / "candidates"
-                        / snapshot.snapshot_id
-                        / "snapshot.json"
-                    )
-                    self.state.succeed(
+                        raise
+                    snapshot = self.evidence.freeze_candidate(
                         self.manifest.epoch_id,
-                        work_id,
-                        self._evidence_ref(metadata_path),
-                        file_digest(metadata_path),
+                        output,
+                        creator,
+                        round_index,
+                        parent_snapshot_id=parent.snapshot_id if parent else None,
                     )
-                    self.snapshots.append(snapshot)
-                    self.snapshots = self._ordered_snapshots(self.snapshots)
-                    snapshot_by_key[(creator.artifact_id, round_index)] = snapshot
+                    self._publish_agent_trace(
+                        f"{snapshot.snapshot_id}--creator",
+                        backend,
+                    )
+                metadata_path = (
+                    self.evidence.epoch_root(self.manifest.epoch_id)
+                    / "candidates"
+                    / snapshot.snapshot_id
+                    / "snapshot.json"
+                )
+                self.state.succeed(
+                    self.manifest.epoch_id,
+                    work_id,
+                    self._evidence_ref(metadata_path),
+                    file_digest(metadata_path),
+                )
+                self.snapshots.append(snapshot)
+                self.snapshots = self._ordered_snapshots(self.snapshots)
+                snapshot_by_key[(creator.artifact_id, round_index)] = snapshot
+
+            seed = self._freeze_round_seed(round_index)
+            round_snapshots = [
+                snapshot for snapshot in self.snapshots
+                if snapshot.round_index == round_index
+            ]
+            for snapshot in round_snapshots:
                 validation = self.validations.get(snapshot.snapshot_id)
                 if validation is None:
                     validation_work_id = self._validation_work_id(snapshot)
@@ -578,11 +666,30 @@ class TournamentController:
                             + validation_work_id
                         )
                     try:
-                        validation = self.validator.validate(
-                            Path(snapshot.package_path),
-                            snapshot.package_digest,
-                            self.manifest.public_seed,
-                        )
+                        with tempfile.TemporaryDirectory(
+                            prefix="bba-instance-materialize-"
+                        ) as temporary:
+                            generated_output = Path(temporary) / "instance"
+                            validation = self.validator.validate(
+                                Path(snapshot.design_path),
+                                snapshot.snapshot_id,
+                                snapshot.design_digest,
+                                seed,
+                                generated_output,
+                            )
+                            if validation.passed:
+                                instance = self.evidence.freeze_instance(
+                                    self.manifest.epoch_id,
+                                    generated_output,
+                                    snapshot,
+                                    seed,
+                                    self.manifest.thresholds.sample_count,
+                                )
+                                if validation.instance_digest != instance.instance_digest:
+                                    raise RuntimeError(
+                                        "validation and frozen instance digests disagree"
+                                    )
+                                self.instances[snapshot.snapshot_id] = instance
                     except Exception as exc:
                         self.state.fail(
                             self.manifest.epoch_id, validation_work_id, str(exc)
@@ -601,13 +708,21 @@ class TournamentController:
                         file_digest(validation_path),
                     )
                     self.validations[snapshot.snapshot_id] = validation
+
                 cells = self.cells.setdefault(snapshot.snapshot_id, [])
                 existing_cells = {
                     (cell.solver.artifact_id, cell.repetition): cell for cell in cells
                 }
                 if validation.passed:
+                    if snapshot.snapshot_id not in self.instances:
+                        raise RuntimeError(
+                            "valid design has no frozen evaluation instance: "
+                            + snapshot.snapshot_id
+                        )
                     for solver in self.manifest.cohort:
-                        for repetition in range(self.manifest.thresholds.solver_repetitions):
+                        for repetition in range(
+                            self.manifest.thresholds.solver_repetitions
+                        ):
                             cell_key = (solver.artifact_id, repetition)
                             if cell_key in existing_cells:
                                 continue
@@ -642,7 +757,7 @@ class TournamentController:
                             )
                             cells.append(cell)
                             existing_cells[cell_key] = cell
-                feedback[creator.artifact_id] = self._feedback(snapshot)
+
             self.evidence.publish_record_idempotent(
                 self.manifest.epoch_id,
                 "state",
@@ -650,6 +765,7 @@ class TournamentController:
                 {
                     "manifest_digest": self.manifest.digest,
                     "round": round_index,
+                    "evaluation_seed": seed,
                 },
             )
         if not self._public_run_is_complete():
@@ -663,9 +779,10 @@ class TournamentController:
         self.state.set_phase(self.manifest.epoch_id, "awaiting_review")
 
     def select_review_items(self, snapshot: CandidateSnapshot) -> List[str]:
-        gold = read_jsonl_strict(Path(snapshot.package_path) / "gold_private_sample.jsonl")
+        instance = self.instances[snapshot.snapshot_id]
+        gold = read_jsonl_strict(Path(instance.instance_path) / "gold_private_sample.jsonl")
         ids = sorted(row["id"] for row in gold)
-        generator = random.Random(int(snapshot.package_digest[:16], 16))
+        generator = random.Random(int(instance.instance_digest[:16], 16))
         return sorted(generator.sample(ids, self.manifest.thresholds.reviewer_sample_count))
 
     def record_human_review(
@@ -689,7 +806,8 @@ class TournamentController:
             canonical_json(dict(reconstructed_answers))
         ).hexdigest()
         registry = PromotionRegistry(self.evidence)
-        existing = self.promotions.get(snapshot.package_digest)
+        instance = self.instances[snapshot.snapshot_id]
+        existing = self.promotions.get(snapshot.design_digest)
         if existing is not None:
             if not registry.verify(existing, signing_key):
                 raise ValueError("the signing key does not verify the existing review")
@@ -715,13 +833,13 @@ class TournamentController:
             self.evidence.publish_record_idempotent(
                 self.manifest.epoch_id,
                 "promotions",
-                snapshot.package_digest,
+                snapshot.design_digest,
                 existing,
             )
             registry.append(existing, signing_key)
-            self.promotions[snapshot.package_digest] = existing
+            self.promotions[snapshot.design_digest] = existing
             return existing
-        gold = read_jsonl_strict(Path(snapshot.package_path) / "gold_private_sample.jsonl")
+        gold = read_jsonl_strict(Path(instance.instance_path) / "gold_private_sample.jsonl")
         gold_map = {row["id"]: row["answer"] for row in gold}
         all_correct = all(
             canonical_json(reconstructed_answers[item_id]) == canonical_json(gold_map[item_id])
@@ -734,11 +852,21 @@ class TournamentController:
             / "validations"
             / f"{snapshot.snapshot_id}.json"
         )
+        instance_path = (
+            self.evidence.epoch_root(self.manifest.epoch_id)
+            / "instances"
+            / instance.instance_id
+            / "instance.json"
+        )
         cell_paths = sorted((self.evidence.epoch_root(self.manifest.epoch_id) / "solver-cells").glob(f"{snapshot.snapshot_id}--*.json"))
-        evidence_digests = {"validation": file_digest(validation_path)}
+        evidence_digests = {
+            "validation": file_digest(validation_path),
+            "instance": file_digest(instance_path),
+        }
         evidence_digests.update({f"cell_{index}": file_digest(path) for index, path in enumerate(cell_paths)})
         record = PromotionRecord(
-            candidate_digest=snapshot.package_digest,
+            design_digest=snapshot.design_digest,
+            instance_digest=instance.instance_digest,
             reviewer_id=reviewer_id,
             decision=decision,
             sampled_item_ids=tuple(expected_ids),
@@ -752,11 +880,11 @@ class TournamentController:
         self.evidence.publish_record_idempotent(
             self.manifest.epoch_id,
             "promotions",
-            snapshot.package_digest,
+            snapshot.design_digest,
             signed,
         )
         registry.append(signed, signing_key)
-        self.promotions[snapshot.package_digest] = signed
+        self.promotions[snapshot.design_digest] = signed
         return signed
 
     def _evaluations(self) -> List[CandidateEvaluation]:
@@ -768,7 +896,7 @@ class TournamentController:
                 self.manifest.cohort,
                 self.manifest.thresholds.solver_repetitions,
                 self.manifest.thresholds.rejection_accuracy,
-                self.promotions.get(snapshot.package_digest),
+                self.promotions.get(snapshot.design_digest),
             )
             for snapshot in self.snapshots
         ]
@@ -816,7 +944,11 @@ class TournamentController:
             "matrix": matrix(evaluations, self.manifest.cohort),
             "creator_rankings": {"blind_round": blind, "final_round": final},
             "adaptation": adaptation,
-            "solver_ranking": rank_solvers(evaluations, self.manifest.cohort, self.manifest.public_seed),
+            "solver_ranking": rank_solvers(
+                evaluations,
+                self.manifest.cohort,
+                int(self.manifest.digest[:16], 16),
+            ),
             "candidate_statuses": {
                 evaluation.snapshot.snapshot_id: evaluation.status.value
                 for evaluation in evaluations

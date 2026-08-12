@@ -11,8 +11,8 @@ from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional
 
 
-PROTOCOL_VERSION = "bba.epoch.v2"
-SCHEMA_VERSION = 2
+PROTOCOL_VERSION = "bba.epoch.v3"
+SCHEMA_VERSION = 3
 
 
 class StrEnum(str, Enum):
@@ -154,7 +154,6 @@ class ExperimentManifest:
     catalog_version: str
     gcp_project: str
     gcp_location: str
-    public_seed: int
     hidden_commitments: Mapping[str, str]
     creator_prompt_digest: str
     solver_prompt_digest: str
@@ -210,7 +209,8 @@ class ScoreSummary:
 
 @dataclass(frozen=True)
 class SolverCell:
-    candidate_digest: str
+    snapshot_id: str
+    instance_digest: str
     solver: ModelIdentity
     repetition: int
     state: CellState
@@ -237,28 +237,43 @@ class SolverCell:
 @dataclass(frozen=True)
 class CandidateSnapshot:
     snapshot_id: str
-    package_digest: str
+    design_digest: str
     creator: ModelIdentity
     round_index: int
     parent_snapshot_id: Optional[str]
     created_at: str
-    package_path: str
+    design_path: str
+
+
+@dataclass(frozen=True)
+class EvaluationInstance:
+    instance_id: str
+    snapshot_id: str
+    design_digest: str
+    instance_digest: str
+    round_index: int
+    seed: int
+    sample_count: int
+    created_at: str
+    instance_path: str
 
 
 @dataclass(frozen=True)
 class ValidationRecord:
-    candidate_digest: str
+    snapshot_id: str
+    design_digest: str
     passed: bool
-    public_seed: int
+    evaluation_seed: int
     checks: Mapping[str, bool]
     errors: tuple = ()
-    generated_payload_digest: Optional[str] = None
+    instance_digest: Optional[str] = None
     alternate_payload_digest: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class PromotionRecord:
-    candidate_digest: str
+    design_digest: str
+    instance_digest: str
     reviewer_id: str
     decision: PromotionDecision
     sampled_item_ids: tuple
@@ -337,6 +352,10 @@ def candidate_snapshot_from_mapping(value: Mapping[str, Any]) -> CandidateSnapsh
     data = dict(value)
     data["creator"] = model_identity_from_mapping(data["creator"])
     return CandidateSnapshot(**data)
+
+
+def evaluation_instance_from_mapping(value: Mapping[str, Any]) -> EvaluationInstance:
+    return EvaluationInstance(**dict(value))
 
 
 def validation_record_from_mapping(value: Mapping[str, Any]) -> ValidationRecord:

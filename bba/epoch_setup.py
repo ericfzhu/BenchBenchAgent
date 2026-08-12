@@ -60,7 +60,6 @@ def create_experiment_manifest(
         catalog_version=CATALOG_VERSION,
         gcp_project=project,
         gcp_location=GCP_LOCATION,
-        public_seed=secrets.randbits(63),
         hidden_commitments=commitments,
         creator_prompt_digest=digest_json(CREATOR_INSTRUCTION),
         solver_prompt_digest=digest_json(SOLVER_INSTRUCTION),

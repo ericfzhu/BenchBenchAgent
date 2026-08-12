@@ -176,7 +176,7 @@ The default root is `.bba`.
 ```
 
 This command gets the project from ADC.
-It creates the epoch ID, public seed, hidden material, commitments, and manifest.
+It creates the epoch ID, hidden material, commitments, and manifest.
 It also creates the local SQLite state file.
 The command prints the epoch ID.
 
@@ -199,9 +199,16 @@ The command does this work:
 2. It restores complete evidence.
 3. It resets a work item that a prior process interrupted.
 4. It runs unfinished creator work through Vertex AI.
-5. It validates each new snapshot in the local sandbox.
-6. It runs unfinished solver cells through Vertex AI.
-7. It saves each result before it starts the next work item.
+5. It freezes all benchmark designs in the current round.
+6. It selects and freezes one round evaluation seed.
+7. It generates and freezes one evaluation instance from each design.
+8. It validates each new instance in the local sandbox.
+9. It runs unfinished solver cells through Vertex AI.
+10. It saves each result before it starts the next work item.
+
+The creator does not receive the round seed.
+The round seed does not make the creator model deterministic.
+It makes each frozen generator reproduce the same evaluation instance.
 
 You can stop the process between work items.
 If the process stops during one item, BBA starts that item again.
@@ -370,6 +377,8 @@ epochs/
     private/
       holdout-plan.json
     candidates/
+    round-seeds/
+    instances/
     validations/
     solver-cells/
     agent-traces/
@@ -411,6 +420,6 @@ Use these controls:
 - Set model quotas before the epoch.
 - Check local agent traces after a small test epoch.
 - Estimate the full epoch from measured token use.
-- Keep three solver repetitions for a conforming version 2 epoch.
+- Keep three solver repetitions for a conforming version 3 epoch.
 
 Local storage, local CPU work, and local backup have no Vertex AI inference charge.

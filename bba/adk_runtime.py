@@ -46,10 +46,11 @@ if ADK_VERSION != SUPPORTED_ADK_VERSION:
 
 CREATOR_INSTRUCTION = """You are a benchmark creator in a BenchBenchAgent epoch.
 
-Build one complete executable benchmark package in the provided empty or
-parent-derived workspace. The package must state a meaningful capability,
-generate deterministic private instances from controller-selected seeds, and
-include an independent verifier and exact-match scorer. Use only the candidate
+Build one executable benchmark design in the provided empty or parent-derived
+workspace. The design must state a meaningful capability, generate deterministic
+private instances from controller-selected seeds, and include an independent
+verifier and exact-match scorer. The controller selects the evaluation seed only
+after every design in the round is frozen. Use only the candidate
 filesystem tools. Generated code may be executed only with
 run_candidate_python, which uses the controller's credential-free sandbox.
 
@@ -59,16 +60,14 @@ Required package files:
 - generator.py
 - verifier.py
 - scorer.py
-- gold_private_sample.jsonl
 - validation_report.md
 - failure_modes.md
 - requirements.lock
-- solver_bundle/SOLVER_MANIFEST.json
-- solver_bundle/items_private_sample.jsonl
 - solver_bundle/README.md or solver_bundle/solver_packet.md
 
-Never place gold answers, answer mappings, private diagnostics, or hidden audit
-material in solver_bundle. Call finish_candidate only after the package is
+Do not generate evaluation items or gold during construction. Never place gold
+answers, answer mappings, private diagnostics, or hidden audit material in
+solver_bundle. Call finish_candidate only after the design is
 complete and you have checked it as far as the available tools permit.
 """
 
@@ -438,7 +437,7 @@ class AdkCreatorBackend(_TraceBackend):
             }
 
         def finish_candidate() -> Dict[str, Any]:
-            """Declare that the executable candidate package is complete."""
+            """Declare that the executable benchmark design is complete."""
             nonlocal finished
             finished = True
             return {"complete": True, "file_count": len(list_candidate_files()["files"])}
@@ -463,7 +462,6 @@ class AdkCreatorBackend(_TraceBackend):
             "creator": to_primitive(identity),
             "round": round_index,
             "sample_count": manifest.thresholds.sample_count,
-            "public_seed": manifest.public_seed,
             "budget": to_primitive(manifest.budget),
             "has_parent_snapshot": parent_package is not None,
             "public_feedback": to_primitive(feedback),

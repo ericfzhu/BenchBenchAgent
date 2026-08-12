@@ -14,11 +14,13 @@ from typing import Any, Optional
 
 from bba.protocol import (
     CandidateSnapshot,
+    EvaluationInstance,
     ExperimentManifest,
     ModelIdentity,
     candidate_snapshot_from_mapping,
     canonical_json,
     experiment_manifest_from_mapping,
+    evaluation_instance_from_mapping,
     to_primitive,
 )
 
@@ -151,11 +153,24 @@ class EvidenceStore:
             if metadata_path.parent.name.startswith("."):
                 continue
             snapshot = candidate_snapshot_from_mapping(read_json(metadata_path))
-            package_path = metadata_path.parent / "package"
-            if tree_digest(package_path) != snapshot.package_digest:
+            design_path = metadata_path.parent / "design"
+            if tree_digest(design_path) != snapshot.design_digest:
                 raise ValueError(f"candidate snapshot digest is invalid: {snapshot.snapshot_id}")
-            snapshots.append(dataclasses.replace(snapshot, package_path=str(package_path)))
+            snapshots.append(dataclasses.replace(snapshot, design_path=str(design_path)))
         return snapshots
+
+    def load_instances(self, epoch_id: str) -> list[EvaluationInstance]:
+        root = self.epoch_root(epoch_id) / "instances"
+        instances = []
+        for metadata_path in sorted(root.glob("*/instance.json")):
+            if metadata_path.parent.name.startswith("."):
+                continue
+            instance = evaluation_instance_from_mapping(read_json(metadata_path))
+            instance_path = metadata_path.parent / "data"
+            if tree_digest(instance_path) != instance.instance_digest:
+                raise ValueError(f"evaluation instance digest is invalid: {instance.instance_id}")
+            instances.append(dataclasses.replace(instance, instance_path=str(instance_path)))
+        return instances
 
     def freeze_candidate(
         self,
@@ -166,23 +181,23 @@ class EvidenceStore:
         parent_snapshot_id: Optional[str] = None,
     ) -> CandidateSnapshot:
         source = Path(source).resolve()
-        package_digest = tree_digest(source)
-        snapshot_id = f"{creator.artifact_id}.r{round_index}.{package_digest[:12]}"
+        design_digest = tree_digest(source)
+        snapshot_id = f"{creator.artifact_id}.r{round_index}.{design_digest[:12]}"
         candidates_root = self.epoch_root(epoch_id) / "candidates"
         final_root = candidates_root / snapshot_id
-        destination = final_root / "package"
+        destination = final_root / "design"
         metadata_path = final_root / "snapshot.json"
         if metadata_path.is_file() and destination.is_dir():
             existing = candidate_snapshot_from_mapping(read_json(metadata_path))
             if (
-                existing.package_digest != package_digest
+                existing.design_digest != design_digest
                 or existing.creator != creator
                 or existing.round_index != round_index
                 or existing.parent_snapshot_id != parent_snapshot_id
-                or tree_digest(destination) != package_digest
+                or tree_digest(destination) != design_digest
             ):
                 raise FileExistsError(f"candidate snapshot conflicts with evidence: {snapshot_id}")
-            return dataclasses.replace(existing, package_path=str(destination))
+            return dataclasses.replace(existing, design_path=str(destination))
         if final_root.exists():
             raise RuntimeError(f"candidate snapshot is incomplete: {snapshot_id}")
 
@@ -191,18 +206,18 @@ class EvidenceStore:
             tempfile.mkdtemp(prefix=".candidate-freeze-", dir=str(candidates_root))
         )
         try:
-            temporary_package = temporary_root / "package"
-            shutil.copytree(source, temporary_package, symlinks=False)
-            if tree_digest(temporary_package) != package_digest:
+            temporary_design = temporary_root / "design"
+            shutil.copytree(source, temporary_design, symlinks=False)
+            if tree_digest(temporary_design) != design_digest:
                 raise RuntimeError("candidate digest changed while freezing snapshot")
             snapshot = CandidateSnapshot(
                 snapshot_id=snapshot_id,
-                package_digest=package_digest,
+                design_digest=design_digest,
                 creator=creator,
                 round_index=round_index,
                 parent_snapshot_id=parent_snapshot_id,
                 created_at=datetime.now(timezone.utc).isoformat(),
-                package_path=str(destination),
+                design_path=str(destination),
             )
             atomic_publish_json(temporary_root / "snapshot.json", snapshot)
             try:
@@ -211,15 +226,67 @@ class EvidenceStore:
                 if metadata_path.is_file() and destination.is_dir():
                     existing = candidate_snapshot_from_mapping(read_json(metadata_path))
                     if (
-                        existing.package_digest == package_digest
+                        existing.design_digest == design_digest
                         and existing.creator == creator
                         and existing.round_index == round_index
                         and existing.parent_snapshot_id == parent_snapshot_id
-                        and tree_digest(destination) == package_digest
+                        and tree_digest(destination) == design_digest
                     ):
-                        return dataclasses.replace(existing, package_path=str(destination))
+                        return dataclasses.replace(existing, design_path=str(destination))
                 raise
             return snapshot
+        finally:
+            if temporary_root.exists():
+                shutil.rmtree(temporary_root)
+
+    def freeze_instance(
+        self,
+        epoch_id: str,
+        source: Path,
+        snapshot: CandidateSnapshot,
+        seed: int,
+        sample_count: int,
+    ) -> EvaluationInstance:
+        source = Path(source).resolve()
+        instance_digest = tree_digest(source)
+        instance_id = f"{snapshot.snapshot_id}.seed-{seed}.{instance_digest[:12]}"
+        instances_root = self.epoch_root(epoch_id) / "instances"
+        final_root = instances_root / instance_id
+        destination = final_root / "data"
+        metadata_path = final_root / "instance.json"
+        expected = EvaluationInstance(
+            instance_id=instance_id,
+            snapshot_id=snapshot.snapshot_id,
+            design_digest=snapshot.design_digest,
+            instance_digest=instance_digest,
+            round_index=snapshot.round_index,
+            seed=seed,
+            sample_count=sample_count,
+            created_at="",
+            instance_path=str(destination),
+        )
+        if metadata_path.is_file() and destination.is_dir():
+            existing = evaluation_instance_from_mapping(read_json(metadata_path))
+            comparable = dataclasses.replace(expected, created_at=existing.created_at)
+            if existing != comparable or tree_digest(destination) != instance_digest:
+                raise FileExistsError(f"evaluation instance conflicts with evidence: {instance_id}")
+            return dataclasses.replace(existing, instance_path=str(destination))
+        if final_root.exists():
+            raise RuntimeError(f"evaluation instance is incomplete: {instance_id}")
+        instances_root.mkdir(parents=True, exist_ok=True)
+        temporary_root = Path(tempfile.mkdtemp(prefix=".instance-freeze-", dir=str(instances_root)))
+        try:
+            temporary_data = temporary_root / "data"
+            shutil.copytree(source, temporary_data, symlinks=False)
+            if tree_digest(temporary_data) != instance_digest:
+                raise RuntimeError("evaluation instance changed while freezing")
+            instance = dataclasses.replace(
+                expected,
+                created_at=datetime.now(timezone.utc).isoformat(),
+            )
+            atomic_publish_json(temporary_root / "instance.json", instance)
+            os.rename(temporary_root, final_root)
+            return instance
         finally:
             if temporary_root.exists():
                 shutil.rmtree(temporary_root)

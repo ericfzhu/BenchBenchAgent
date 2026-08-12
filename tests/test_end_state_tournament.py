@@ -44,7 +44,6 @@ class TestEndStateTournament(unittest.TestCase):
             catalog_version="fixture-catalog",
             gcp_project="bba-test-project",
             gcp_location="global",
-            public_seed=20260811,
             hidden_commitments={key: digest_json(value) for key, value in self.hidden_material.items()},
             creator_prompt_digest="creator-prompt",
             solver_prompt_digest="solver-prompt",
@@ -73,8 +72,27 @@ class TestEndStateTournament(unittest.TestCase):
     def test_complete_epoch_review_rankings_and_audit(self):
         self.controller.run_public_epoch()
         self.assertEqual(len(self.controller.snapshots), 12)
+        self.assertEqual(len(self.controller.instances), 12)
+        self.assertEqual(len(self.controller.round_seeds), 3)
         self.assertEqual(sum(len(cells) for cells in self.controller.cells.values()), 144)
         self.assertTrue(all(record.passed for record in self.controller.validations.values()))
+
+        for round_index in range(3):
+            round_snapshots = [
+                snapshot for snapshot in self.controller.snapshots
+                if snapshot.round_index == round_index
+            ]
+            self.assertEqual(len(round_snapshots), 4)
+            self.assertEqual(
+                {self.controller.instances[snapshot.snapshot_id].seed for snapshot in round_snapshots},
+                {self.controller.round_seeds[round_index]},
+            )
+            for snapshot in round_snapshots:
+                design = Path(snapshot.design_path)
+                self.assertFalse((design / "gold_private_sample.jsonl").exists())
+                self.assertFalse(
+                    (design / "solver_bundle" / "items_private_sample.jsonl").exists()
+                )
 
         for identity in self.cohort:
             chain = [
@@ -92,7 +110,10 @@ class TestEndStateTournament(unittest.TestCase):
         for snapshot in final_snapshots:
             gold = {
                 row["id"]: row["answer"]
-                for row in read_jsonl_strict(Path(snapshot.package_path) / "gold_private_sample.jsonl")
+                for row in read_jsonl_strict(
+                    Path(self.controller.instances[snapshot.snapshot_id].instance_path)
+                    / "gold_private_sample.jsonl"
+                )
             }
             selected = self.controller.select_review_items(snapshot)
             signed = self.controller.record_human_review(
@@ -202,7 +223,54 @@ class TestEndStateTournament(unittest.TestCase):
 
         restored = TournamentController(manifest, evidence)
         self.assertEqual(len(restored.snapshots), 12)
+        self.assertEqual(len(restored.instances), 12)
+        self.assertEqual(len(restored.round_seeds), 3)
         self.assertEqual(restored.epoch_status()["work_counts"], {"succeeded": 72})
+
+    def test_round_seed_is_selected_only_after_all_round_designs_freeze(self):
+        class ObserveSeedBarrier:
+            def __init__(self, delegate, evidence, epoch_id):
+                self.delegate = delegate
+                self.evidence = evidence
+                self.epoch_id = epoch_id
+
+            def build(self, identity, round_index, *args, **kwargs):
+                seed_path = (
+                    self.evidence.epoch_root(self.epoch_id)
+                    / "round-seeds"
+                    / f"round-{round_index}.json"
+                )
+                if seed_path.exists():
+                    raise AssertionError("round seed existed during creator construction")
+                return self.delegate.build(identity, round_index, *args, **kwargs)
+
+        manifest = replace(
+            self.manifest,
+            epoch_id="seed-barrier-fixture",
+            thresholds=DecisionThresholds(sample_count=6, solver_repetitions=1),
+        )
+        evidence = EvidenceStore(self.root)
+        creators = {
+            identity.artifact_id: ObserveSeedBarrier(
+                ExecutableCreatorFixture(0.25), evidence, manifest.epoch_id
+            )
+            for identity in self.cohort
+        }
+        solvers = {
+            identity.artifact_id: CalibratedSolverFixture(0.55)
+            for identity in self.cohort
+        }
+        controller = TournamentController(
+            manifest,
+            evidence,
+            PackageValidator(
+                LocalFixtureSandbox(acknowledge_unsafe=True), sample_count=6
+            ),
+            creators,
+            solvers,
+        )
+        controller.run_public_epoch()
+        self.assertEqual(len(controller.round_seeds), 3)
 
 
 if __name__ == "__main__":
