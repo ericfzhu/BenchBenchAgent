@@ -23,8 +23,10 @@ from bba.adk_runtime import (
 )
 from bba.catalog import CATALOG_VERSION, SERVERLESS_COHORT
 from bba.errors import ProviderFailure
+from bba.evidence import EvidenceStore
 from bba.gcp import configure_gcp_environment
 from bba.protocol import ExperimentManifest, ModelIdentity, ResourceBudget, digest_json
+from bba.preflight import run_preflight
 
 
 class ScriptedLlm(BaseLlm):
@@ -217,6 +219,29 @@ class TestAdkRuntime(unittest.TestCase):
         self.assertEqual(trace.tool_calls, ("submit_predictions",))
         self.assertEqual(trace.model_calls, 2)
         self.assertTrue(trace.session_id.startswith("solver-"))
+
+    def test_preflight_checks_tool_use_usage_and_identity(self):
+        cohort = self.manifest.cohort
+        backends = {}
+        for identity in cohort:
+            model = ScriptedLlm(model=identity.model, responses=[
+                _tool_call("submit-1", "submit_predictions", {
+                    "predictions_json": json.dumps([
+                        {"id": "preflight-item", "answer": 1}
+                    ]),
+                }),
+                _final(),
+            ])
+            backends[identity.artifact_id] = AdkSolverBackend(model)
+        with tempfile.TemporaryDirectory() as temporary:
+            record = run_preflight(
+                self.manifest,
+                EvidenceStore(Path(temporary)),
+                backends,
+            )
+        self.assertTrue(record["passed"])
+        self.assertFalse(record["deployment_created"])
+        self.assertEqual(len(record["models"]), len(cohort))
 
     def test_cumulative_token_budget_is_enforced(self):
         model = ScriptedLlm(model="scripted-budget", responses=[

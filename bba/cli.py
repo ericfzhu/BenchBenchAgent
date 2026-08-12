@@ -10,6 +10,7 @@ from typing import Any, Sequence
 
 from bba.adk_runtime import build_adk_backends, build_hidden_solver_backends
 from bba.audit_runner import SealedAuditRunner, build_public_audit_population
+from bba.budget import estimate_epoch
 from bba.catalog import catalog_summary
 from bba.evidence import EvidenceStore, read_json, tree_digest
 from bba.epoch_setup import create_experiment_manifest, new_epoch_id
@@ -20,6 +21,7 @@ from bba.protocol import (
     ReviewFindings,
     to_primitive,
 )
+from bba.preflight import run_preflight
 from bba.replay import replay_solver_attempt
 from bba.runtime import SecureSandbox
 from bba.state import LocalStateStore, local_file_lock
@@ -138,6 +140,11 @@ def _epoch_run(args: argparse.Namespace) -> int:
     evidence = _evidence(args)
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
         manifest = evidence.load_manifest(args.epoch_id)
+        preflight_path = evidence.record_path(args.epoch_id, "preflight", "vertex")
+        if not preflight_path.is_file():
+            raise RuntimeError(
+                "paid epoch requires a passing Vertex preflight; run bba epoch preflight first"
+            )
         state = _state(evidence)
         state.register_epoch(manifest)
         state.recover_interrupted(args.epoch_id)
@@ -179,6 +186,17 @@ def _epoch_run(args: argparse.Namespace) -> int:
         )
         controller.run_public_epoch()
         _print_json(controller.epoch_status())
+    return 0
+
+
+def _epoch_preflight(args: argparse.Namespace) -> int:
+    evidence = _evidence(args)
+    with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
+        manifest = evidence.load_manifest(args.epoch_id)
+        _print_json({
+            "estimate": estimate_epoch(manifest),
+            "preflight": run_preflight(manifest, evidence),
+        })
     return 0
 
 
@@ -338,6 +356,12 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
     run = epoch_commands.add_parser("run", help="run or resume the public tournament")
     _add_epoch_id(run)
     run.set_defaults(handler=_epoch_run)
+
+    preflight = epoch_commands.add_parser(
+        "preflight", help="run the small paid Vertex model readiness check"
+    )
+    _add_epoch_id(preflight)
+    preflight.set_defaults(handler=_epoch_preflight)
 
     status = epoch_commands.add_parser("status", help="show saved local progress")
     _add_epoch_id(status)

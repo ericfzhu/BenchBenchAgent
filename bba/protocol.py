@@ -61,6 +61,7 @@ class ModelIdentity:
     adk_model: str
     reasoning: str = "default"
     scaffold: str = "public-v1"
+    behavior_settings: Mapping[str, Any] = field(default_factory=dict)
     tools: tuple = ()
 
     def __post_init__(self) -> None:
@@ -89,6 +90,10 @@ class ResourceBudget:
     memory_mb: int = 2048
     process_limit: int = 64
     cpu_seconds: int = 600
+    max_epoch_calls: int = 5000
+    max_epoch_input_tokens: int = 100_000_000
+    max_epoch_output_tokens: int = 25_000_000
+    max_estimated_cost_usd: float = 5000.0
 
     def __post_init__(self) -> None:
         if min(
@@ -99,6 +104,10 @@ class ResourceBudget:
             self.memory_mb,
             self.process_limit,
             self.cpu_seconds,
+            self.max_epoch_calls,
+            self.max_epoch_input_tokens,
+            self.max_epoch_output_tokens,
+            self.max_estimated_cost_usd,
         ) <= 0:
             raise ValueError("resource budgets must be positive")
 

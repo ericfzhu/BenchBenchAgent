@@ -185,7 +185,19 @@ You cannot change the manifest or private material after this command.
 
 ## 10. Run or resume the public tournament
 
-Run this command:
+Run the small paid Vertex preflight first:
+
+```bash
+.venv/bin/bba epoch preflight \
+  --epoch-id EPOCH_ID \
+  --evidence-root .bba
+```
+
+The command checks every frozen model route and tool contract.
+It prints the frozen invocation and token limits.
+It does not deploy an endpoint.
+
+Then run this command:
 
 ```bash
 .venv/bin/bba epoch run \

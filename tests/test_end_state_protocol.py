@@ -8,6 +8,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from bba.audit import DefectPair, audit_evaluator
+from bba.budget import EpochBudgetLedger, estimate_epoch
 from bba.catalog import CATALOG_VERSION, GCP_LOCATION, SERVERLESS_COHORT
 from bba.damage import create_damage_variants
 from bba.dependencies import LocalWheelCatalog, build_dependency_environment, parse_lockfile
@@ -28,6 +29,7 @@ from bba.protocol import (
     digest_json,
 )
 from bba.runtime import SandboxUnavailable, SecureSandbox
+from bba.scheduler import BoundedScheduler
 from tests.fixtures import ExecutableCreatorFixture, LocalFixtureSandbox
 from bba.validator import PackageValidator
 
@@ -209,6 +211,21 @@ class TestEndStateProtocol(unittest.TestCase):
             lock.write_text("requests==2.0.0\n", encoding="utf-8")
             with self.assertRaises(ValueError):
                 parse_lockfile(lock)
+
+    def test_epoch_estimate_budget_and_scheduler_are_bounded(self):
+        value = manifest()
+        estimate = estimate_epoch(value)
+        self.assertGreater(estimate.public_solver_invocations, 0)
+        ledger = EpochBudgetLedger(value)
+        ledger.reserve(1, 1, 1)
+        with self.assertRaises(RuntimeError):
+            ledger.reserve(value.budget.max_epoch_calls, 1, 1)
+        scheduler = BoundedScheduler(workers=2, per_publisher=1)
+        result = scheduler.map((
+            ("b", "google", lambda: 2),
+            ("a", "google", lambda: 1),
+        ))
+        self.assertEqual(result, {"a": 1, "b": 2})
 
     def test_invalid_validation_does_not_claim_an_instance(self):
         sandbox = LocalFixtureSandbox(acknowledge_unsafe=True)

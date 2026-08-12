@@ -11,6 +11,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import re
 import shutil
 import threading
 from dataclasses import dataclass
@@ -106,6 +107,7 @@ class AdkInvocationTrace:
     started_at: str
     finished_at: str
     status: str
+    behavior_settings: Mapping[str, Any]
     error: Optional[str] = None
 
 
@@ -273,6 +275,7 @@ async def _run_agent(
                 started_at=started_at,
                 finished_at=_utc_now(),
                 status=status,
+                behavior_settings=dict(identity.behavior_settings),
                 error=error,
             ))
 
@@ -443,7 +446,7 @@ class AdkCreatorBackend(_TraceBackend):
             return {"complete": True, "file_count": len(list_candidate_files()["files"])}
 
         agent = Agent(
-            name=f"creator_{identity.artifact_id}"[:120],
+            name=("creator_" + re.sub(r"\W", "_", identity.artifact_id))[:120],
             model=self.model,
             instruction=self.instruction,
             tools=[
@@ -592,7 +595,7 @@ class AdkSolverBackend(_TraceBackend):
             return {"accepted": len(submitted)}
 
         agent = Agent(
-            name=f"solver_{identity.artifact_id}"[:120],
+            name=("solver_" + re.sub(r"\W", "_", identity.artifact_id))[:120],
             model=self.model,
             instruction=self.instruction,
             tools=[list_bundle_files, read_bundle_file, submit_predictions],

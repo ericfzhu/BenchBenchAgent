@@ -74,6 +74,8 @@ The manifest must contain these items:
 The cohort must contain at least four model configurations.
 The cohort must contain at least three model families.
 Each model identity must contain the publisher, Google Cloud model ID, ADK model route, family, reasoning mode, and tool mode.
+Each identity must also contain a scaffold identity and explicit supported behavior settings.
+If Vertex AI does not expose a behavior setting, the identity must record that limit.
 Provider-qualified configurations are different identities.
 
 BBA must build each identity from its source catalog.
@@ -123,6 +125,10 @@ Each invocation trace must contain these items:
 The public trace must not contain prompts or tool arguments.
 The model response must contain token-use data.
 BBA must reject a production response that does not contain this data.
+
+Before paid creator work, BBA must run a small preflight for each catalog identity.
+The preflight must check serverless global routing, access, quota, function calling, token metadata, and the frozen response identity.
+The preflight must not deploy an endpoint.
 
 ## 5. Creator rounds
 
