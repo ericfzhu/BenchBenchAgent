@@ -11,6 +11,8 @@ BBA makes a creator-by-solver score matrix.
 BBA also makes separate creator and solver ranks.
 An independent reviewer must approve a benchmark before BBA adds it to the canonical registry.
 A sealed audit tests the public evaluator after the public epoch is closed.
+Version `0.7.0` calculates the audit metrics, but it does not run the hidden experiment.
+See the [implementation status](docs/implementation-status.md) before you run a production epoch.
 
 BBA uses the method from Rohit Krishnan's [BenchBench](https://www.strangeloopcanon.com/p/introducing-benchbench).
 BBA uses the sealed evaluator audit from Ethan Mollick's [BenchBenchBench](https://github.com/emollick/benchbenchbench).
@@ -174,6 +176,7 @@ A timeout or provider error is not a zero score.
 
 - [Protocol specification](docs/protocol.md): Required rules for one epoch.
 - [Operations guide](docs/operations.md): Local setup, commands, recovery, review, and audit.
+- [Implementation status](docs/implementation-status.md): Known incomplete work and completion conditions.
 
 ## Main Python interfaces
 
