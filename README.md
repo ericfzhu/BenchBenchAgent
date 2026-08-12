@@ -11,7 +11,8 @@ BBA makes a creator-by-solver score matrix.
 BBA also makes separate creator and solver ranks.
 Independent evidence must certify solvability. A separate human reviewer must approve the certificate and benchmark before BBA adds it to the canonical registry.
 A sealed audit tests the public evaluator after the public epoch is closed.
-Version `0.11.0` runs the hidden experiment from committed local material.
+Version `0.12.0` also includes a localhost operator console.
+The console controls the same local controller and evidence as the CLI.
 Paid Vertex and full production acceptance evidence are still required.
 See the [implementation status](docs/implementation-status.md) before you run a production epoch.
 
@@ -108,6 +109,32 @@ Show the catalog:
 ```
 
 ## Run an epoch
+
+You can use the CLI or the localhost console.
+Both interfaces use the same saved state and immutable evidence.
+
+Start the console:
+
+```bash
+.venv/bin/bba web \
+  --evidence-root .bba
+```
+
+Open `http://127.0.0.1:8765` in a browser.
+The console can create an epoch, run the paid preflight, run or resume public work, and show saved progress.
+It can also record solvability evidence and a signed candidate decision.
+After public closure, it shows the creator ranking, solver ranking, and creator-by-solver matrix.
+After the sealed audit, it also shows the evaluator audit status.
+
+The console binds only to `127.0.0.1`.
+It rejects requests from other hosts and origins.
+It runs one change operation at a time.
+Paid and irreversible operations require a confirmation in the page.
+Do not use a port proxy or expose this console to a network.
+
+See the [operations guide](docs/operations.md#10-use-the-localhost-console) for the complete console workflow.
+
+## Run an epoch with the CLI
 
 Create the local epoch:
 

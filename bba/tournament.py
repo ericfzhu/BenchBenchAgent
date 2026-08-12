@@ -1401,7 +1401,9 @@ class TournamentController:
             self.promotions[snapshot.design_digest] = signed
         return signed
 
-    def _evaluations(self) -> List[CandidateEvaluation]:
+    def candidate_evaluations(self) -> List[CandidateEvaluation]:
+        """Return the current public evaluation for each complete snapshot."""
+
         return [
             classify_candidate(
                 snapshot,
@@ -1435,7 +1437,7 @@ class TournamentController:
             raise RuntimeError("public epoch work is incomplete")
         if self._audit_public_scores is None:
             raise RuntimeError("audit population must be frozen before the public epoch closes")
-        evaluations = self._evaluations()
+        evaluations = self.candidate_evaluations()
         final_round = self.manifest.thresholds.rounds - 1
         blind = rank_creators(evaluations, 0)
         final = rank_creators(evaluations, final_round)

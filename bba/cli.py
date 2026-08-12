@@ -57,6 +57,13 @@ def _sandbox_status(_args: argparse.Namespace) -> int:
     return 0 if sandbox.available else 1
 
 
+def _web_console(args: argparse.Namespace) -> int:
+    from bba.web import run_console
+
+    run_console(Path(args.evidence_root), args.port)
+    return 0
+
+
 def _evidence_replay_cell(args: argparse.Namespace) -> int:
     evidence = _evidence(args)
     _print_json(replay_solver_attempt(evidence, args.epoch_id, args.attempt_id))
@@ -504,6 +511,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="show the BBA-owned GCP serverless model catalog",
     )
     catalog.set_defaults(handler=_catalog)
+    web = commands.add_parser(
+        "web",
+        help="run the localhost operator console",
+    )
+    _add_evidence_root(web)
+    web.add_argument(
+        "--port",
+        type=int,
+        default=8765,
+        help="local TCP port (default: 8765)",
+    )
+    web.set_defaults(handler=_web_console)
     evidence = commands.add_parser(
         "evidence", help="verify and replay immutable local evidence"
     )

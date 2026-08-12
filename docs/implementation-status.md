@@ -1,7 +1,7 @@
 # BBA implementation status
 
 This document records the implementation and verification state.
-It applies to BBA version `0.11.0` and protocol `bba.epoch.v7`.
+It applies to BBA version `0.12.0` and protocol `bba.epoch.v7`.
 The [protocol specification](protocol.md) is the normative source.
 The [completion plan](implementation-plan.md) gives the work order and acceptance gates.
 
@@ -33,6 +33,7 @@ The [completion plan](implementation-plan.md) gives the work order and acceptanc
 | 14. Cost estimate and hard limits | `Partial` | BBA reports invocation and token ceilings. SQLite reservations enforce epoch call and token limits across retries and resume. A versioned price catalog fails visibly when an exact published price is absent. Current exact prices are not recorded. |
 | 15. Bounded concurrency | `Implemented` | `BoundedScheduler` runs public solver cells with deterministic work IDs, a global limit, and a per-publisher limit. Creator rounds, validation, and the public-to-hidden barrier remain ordered. Resume and retry tests run with this scheduler. |
 | 16. Continuous integration | `Implemented` | CI runs compilation, tests, diff checks, package build, and separate Ubuntu and macOS security jobs. A separate manual workflow performs the paid Vertex smoke test with workload identity. |
+| 17. Local operator console | `Implemented` | `bba web` binds to IPv4 loopback. It uses the existing CLI and controller contracts. It can queue epoch operations, record certificates and signed reviews, and show both rankings, the score matrix, and the audit vector. Host, origin, form-token, and confirmation checks protect local changes. |
 
 ## Local verification
 
@@ -53,6 +54,7 @@ The local suite covers these flows:
 - Local interruption and resume
 - Preflight behavior with deterministic ADK models
 - Bounded scheduler and budget reservations
+- Local console request security, operation serialization, and result rendering
 
 The Ubuntu security job installs Bubblewrap and requires the complete security suite to run.
 The macOS security job requires Seatbelt.

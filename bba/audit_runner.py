@@ -41,7 +41,7 @@ def build_public_audit_population(
     pairs = []
     final_round = controller.manifest.thresholds.rounds - 1
     evaluations = {
-        item.snapshot.snapshot_id: item for item in controller._evaluations()
+        item.snapshot.snapshot_id: item for item in controller.candidate_evaluations()
     }
     for snapshot in controller.snapshots:
         if snapshot.round_index != final_round:

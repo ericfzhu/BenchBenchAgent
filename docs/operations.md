@@ -196,7 +196,68 @@ The command prints the epoch ID.
 Use `--epoch-id NAME` only when you need a specific local name.
 You cannot change the manifest or private material after this command.
 
-## 10. Run or resume the public tournament
+## 10. Use the localhost console
+
+The localhost console is the normal operator interface.
+It uses the same controller, state file, and evidence files as the CLI.
+
+Start the console:
+
+```bash
+.venv/bin/bba web \
+  --evidence-root .bba
+```
+
+Open this address:
+
+```text
+http://127.0.0.1:8765
+```
+
+Use the Epochs page to create an epoch.
+Open the epoch page to start one of these operations:
+
+- Run the paid preflight.
+- Run or resume the public epoch.
+- Freeze the audit population.
+- Close the public epoch.
+- Run the sealed audit.
+
+The console runs one change operation at a time.
+The operation page shows the command result.
+The epoch page shows saved evidence counts and failed work.
+If the console stops, start it again.
+Then run or resume the same epoch.
+
+Open a final-round candidate to record solvability evidence.
+Enter one evidence file on each line in this form:
+
+```text
+NAME=/absolute/path/to/file
+```
+
+For a human reconstruction certificate, also give the absolute path to the answers JSON file.
+The page shows the six selected item IDs.
+
+After a certificate exists, use the same candidate page to record the signed decision.
+Select all seven findings only when they are true.
+Approval fails if one finding is false.
+The approving reviewer must differ from the certificate issuer.
+Enter the absolute paths to the Ed25519 private and public key files.
+Keep the private key outside the evidence root.
+
+After public closure, open the Results page.
+It shows the final creator ranking, solver ranking, and score matrix.
+After the sealed audit, it also shows the evaluator audit status.
+
+The console binds only to `127.0.0.1`.
+It has host, origin, form-token, and browser-frame checks.
+It does not have user accounts or remote access controls.
+Do not expose it through a proxy, tunnel, container port, or network interface.
+
+Use `--port PORT` to select another local port.
+
+## 11. Run or resume the public tournament with the CLI
 
 Run the small paid Vertex preflight first:
 
@@ -243,7 +304,7 @@ Run the same command to resume.
 Do not start two `epoch run` processes for one epoch.
 The local lock rejects the second process.
 
-## 11. Inspect progress
+## 12. Inspect progress with the CLI
 
 Show the phase and work counts:
 
@@ -265,7 +326,7 @@ The public run is complete when the phase is `awaiting_review`.
 A failed work item appears in `failed_work`.
 Correct the local or provider fault and run `epoch run` again.
 
-## 12. Certify solvability and record human adjudication
+## 13. Certify solvability and record human adjudication with the CLI
 
 Certify only final-round snapshots.
 Choose one certificate type:
@@ -368,7 +429,7 @@ An approval fails if one required finding is false.
 A human reconstruction certificate fails if one answer is incorrect.
 The command writes a signed epoch record and an append-only registry record.
 
-## 13. Freeze the public audit population
+## 14. Freeze the public audit population
 
 BBA builds the public evaluator profiles from stored evidence.
 BBA also builds the matched damage profiles and the public-optimizer control.
@@ -384,7 +445,7 @@ Freeze these public values:
 
 Do not reveal the holdout before this command and public closure are complete.
 
-## 14. Close the public epoch
+## 15. Close the public epoch
 
 Run this command:
 
@@ -398,7 +459,7 @@ The command writes the matrix, candidate status, creator ranks, solver ranks, an
 It does not include hidden evidence.
 The phase becomes `public_closed`.
 
-## 15. Run the sealed audit
+## 16. Run the sealed audit
 
 BBA can now open this file:
 
@@ -422,7 +483,7 @@ BBA generates the fresh instances and runs the committed hidden panel.
 BBA derives both target vectors from stored evidence.
 BBA retires the revealed holdout after this command.
 
-## 16. Local files
+## 17. Local files
 
 The evidence root has this layout:
 
@@ -455,7 +516,7 @@ Protect the evidence root because it contains sealed holdout material.
 Back up the complete directory after epoch creation, each public run, and each audit.
 Exclude `private/` when you publish public evidence.
 
-## 17. Failure response
+## 18. Failure response
 
 Use these rules after a failure:
 
@@ -468,7 +529,7 @@ Use these rules after a failure:
 - Do not reveal hidden evidence before public closure.
 - Do not reuse revealed holdout material in another epoch.
 
-## 18. Cost controls
+## 19. Cost controls
 
 BBA uses serverless model inference.
 It has no persistent model-serving charge.
