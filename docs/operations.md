@@ -32,11 +32,10 @@ Prepare these items:
 - Google Cloud CLI
 - A Google Cloud project with billing
 - Vertex AI API access
-- Access to each selected serverless Model Garden model
+- Access to each model in the BBA serverless catalog
 - A supported local operating-system sandbox
 - Sufficient local disk space
 - An independent reviewer
-- Sealed holdout material
 
 Google documents the current Vertex AI setup in the [Vertex AI quickstart](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/start/quickstart).
 
@@ -73,13 +72,17 @@ gcloud services enable aiplatform.googleapis.com
 ```
 
 Give the local operator `roles/aiplatform.user` or a narrower custom role.
-Open each selected model card in Model Garden.
+Open each catalog model card in Model Garden.
 Accept the model terms when Google Cloud requests this action.
 
-The model card must show `Serverless`.
-Do not select a card that shows `Self-deployed`.
+BBA owns the catalog.
+The operator cannot add a self-deployed model to an epoch.
 Model availability, quota, price, and terms can change.
-Check each card before each epoch.
+Check the catalog before each epoch:
+
+```bash
+.venv/bin/bba catalog
+```
 
 ## 5. Authenticate the local process
 
@@ -89,13 +92,15 @@ Create local Application Default Credentials:
 gcloud auth application-default login
 ```
 
-Set the required environment values:
+Set the ADC quota project:
 
 ```bash
-export GOOGLE_CLOUD_PROJECT="PROJECT_ID"
-export GOOGLE_CLOUD_LOCATION="global"
-export GOOGLE_GENAI_USE_ENTERPRISE="TRUE"
+gcloud auth application-default set-quota-project PROJECT_ID
 ```
+
+BBA gets the project from ADC.
+BBA sets the `global` location and the Google Cloud ADK mode.
+If ADC cannot find the project, set `GOOGLE_CLOUD_PROJECT`.
 
 Do not put a credential file in the evidence root or a candidate workspace.
 Generated code cannot read the local credentials.
@@ -109,66 +114,56 @@ Run this command:
 ```
 
 On macOS, the result must show `macos-seatbelt` and `available: true`.
-Set `sandbox.backend` in the manifest to the reported backend.
 BBA stops before inference if the required sandbox is not available.
 
 The sandbox has no network access.
 The sandbox cannot read controller credentials, other candidates, or holdout files.
 
-## 7. Prepare the manifest
+## 7. BBA-owned epoch configuration
 
-Copy the example:
+BBA contains one versioned serverless model catalog.
+The catalog contains the exact Google Cloud model ID, ADK route, model family, reasoning mode, and tool mode.
+The operator does not edit these values.
 
-```bash
-cp examples/serverless-pilot-manifest.json epoch-manifest.json
-```
+Catalog `gcp-serverless-2026-08-12` contains these models:
 
-Change these values:
+- `gemini-3.6-flash`
+- `gemini-3.5-flash`
+- `gemini-3.5-flash-lite`
+- `gemini-3.1-pro-preview`
+- `claude-sonnet-5`
+- `claude-opus-5`
+- `claude-fable-5`
+- `claude-opus-4-8`
+- `claude-opus-4-7`
+- `claude-sonnet-4-6`
+- `claude-opus-4-6`
+- `grok-4.3`
 
-- `epoch_id`
-- `gcp_project`
-- `public_seed`
-- Model IDs, families, and reasoning levels
+Gemini 3.1 Pro and Grok 4.3 are Preview models in this catalog version.
+Grok 4.3 uses fixed quota.
+
+BBA also owns these protocol values:
+
 - Resource limits
 - Decision limits
+- Prompt digests
 - Evaluator version
-- Sandbox backend
-- All hidden commitments
+- Sandbox requirements
+- Hidden commitment format
 
-Select at least four model configurations from at least three model families.
-Use only serverless Vertex AI model IDs.
+An epoch manifest contains a frozen copy of these values.
+The manifest is evidence, not operator input.
 
-The example contains zero-value hidden commitments.
-The `epoch create` command rejects these values.
+## 8. Automatic hidden commitments
 
-## 8. Prepare hidden commitments
+BBA creates the hidden solver configuration, hidden seeds, and audit policy before the first creator run.
+BBA stores this material in `private/holdout-plan.json` under the local epoch directory.
+BBA puts only the SHA-256 commitments in `manifest.json`.
 
-The audit authority must prepare these objects before epoch creation:
-
-- Hidden solver panel
-- Hidden seeds
-- Audit policy
-
-Keep the objects in a local protected directory that is outside the evidence root.
-Do not give these objects to the creator process.
-Put only their SHA-256 commitments in the manifest.
-
-Calculate each commitment from canonical JSON:
-
-```python
-from bba.protocol import digest_json
-
-hidden_material = {
-    "hidden_solver_panel": ["SEALED_MODEL_CONFIGURATION"],
-    "hidden_seeds": [991, 997],
-    "audit_policy": {"version": "audit-v1"},
-}
-
-for name, value in hidden_material.items():
-    print(name, digest_json(value))
-```
-
-Do not reveal `hidden_material` before public closure.
+The creator and solver processes cannot read the private directory.
+Do not publish the private directory with public epoch evidence.
+Do not reveal its contents before public closure.
 
 ## 9. Create the local epoch
 
@@ -177,13 +172,16 @@ The default root is `.bba`.
 
 ```bash
 .venv/bin/bba epoch create \
-  --manifest epoch-manifest.json \
   --evidence-root .bba
 ```
 
-This command validates and freezes the manifest.
+This command gets the project from ADC.
+It creates the epoch ID, public seed, hidden material, commitments, and manifest.
 It also creates the local SQLite state file.
-You cannot change the manifest after this command.
+The command prints the epoch ID.
+
+Use `--epoch-id NAME` only when you need a specific local name.
+You cannot change the manifest or private material after this command.
 
 ## 10. Run or resume the public tournament
 
@@ -331,8 +329,13 @@ The phase becomes `public_closed`.
 
 ## 15. Run the sealed audit
 
-The audit authority now releases the committed material.
-The released JSON object must match all manifest commitments.
+The audit authority can now open this file:
+
+```text
+.bba/epochs/EPOCH_ID/private/holdout-plan.json
+```
+
+The file matches all commitments in the manifest.
 
 Prepare two JSON score objects:
 
@@ -346,7 +349,7 @@ Run the audit:
   --epoch-id EPOCH_ID \
   --composite-holdout composite-holdout.json \
   --hidden-only-holdout hidden-only-holdout.json \
-  --revealed-material revealed-material.json \
+  --revealed-material .bba/epochs/EPOCH_ID/private/holdout-plan.json \
   --evidence-root .bba
 ```
 
@@ -364,6 +367,8 @@ locks/
 epochs/
   EPOCH_ID/
     manifest.json
+    private/
+      holdout-plan.json
     candidates/
     validations/
     solver-cells/
@@ -377,8 +382,10 @@ registries/
 ```
 
 Do not edit an evidence file or the SQLite file.
-Do not put holdout material or signing keys in this directory.
-Back up the complete directory after each public run and after each audit.
+Do not put a signing key in this directory.
+Protect the evidence root because it contains sealed holdout material.
+Back up the complete directory after epoch creation, each public run, and each audit.
+Exclude `private/` when you publish public evidence.
 
 ## 17. Failure response
 
@@ -402,9 +409,8 @@ Use these controls:
 
 - Set a Google Cloud budget and alerts.
 - Set model quotas before the epoch.
-- Start with the pilot token and call limits.
-- Check local agent traces after the pilot.
+- Check local agent traces after a small test epoch.
 - Estimate the full epoch from measured token use.
-- Keep three solver repetitions for a conforming version 1 epoch.
+- Keep three solver repetitions for a conforming version 2 epoch.
 
 Local storage, local CPU work, and local backup have no Vertex AI inference charge.

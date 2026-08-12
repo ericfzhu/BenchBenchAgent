@@ -22,9 +22,8 @@ def create_hidden_epoch_material(epoch_id: str) -> dict[str, Any]:
     """Create private inputs before any creator run."""
 
     return {
-        "schema_version": 1,
-        "epoch_id": epoch_id,
         "hidden_solver_panel": {
+            "epoch_id": epoch_id,
             "catalog_version": CATALOG_VERSION,
             "models": to_primitive(SERVERLESS_COHORT),
             "scaffold_seed": secrets.randbits(63),

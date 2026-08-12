@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from bba.cli import main
+from bba.protocol import digest_json
 
 
 class TestLocalEpochCli(unittest.TestCase):
@@ -36,9 +37,28 @@ class TestLocalEpochCli(unittest.TestCase):
             self.assertTrue(manifest_path.is_file())
             self.assertTrue(private_path.is_file())
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            private = json.loads(private_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["catalog_version"], "gcp-serverless-2026-08-12")
             self.assertEqual(manifest["gcp_location"], "global")
             self.assertEqual(len(manifest["cohort"]), 12)
+            self.assertEqual(
+                manifest["hidden_commitments"],
+                {name: digest_json(value) for name, value in private.items()},
+            )
+
+            repeated = io.StringIO()
+            with patch("bba.cli.discover_gcp_project", return_value="bba-test-project"):
+                with redirect_stdout(repeated):
+                    result = main([
+                        "epoch",
+                        "create",
+                        "--epoch-id",
+                        epoch_id,
+                        "--evidence-root",
+                        str(root),
+                    ])
+            self.assertEqual(result, 0)
+            self.assertEqual(json.loads(repeated.getvalue())["phase"], "created")
 
             output = io.StringIO()
             with redirect_stdout(output):

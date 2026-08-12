@@ -89,10 +89,23 @@ def _saved_status(
 def _epoch_create(args: argparse.Namespace) -> int:
     project = discover_gcp_project()
     epoch_id = args.epoch_id or new_epoch_id()
-    manifest, private = create_experiment_manifest(project, epoch_id=epoch_id)
     evidence = _evidence(args)
-    with local_file_lock(evidence.root, f"epoch-{manifest.epoch_id}"):
-        evidence.freeze_epoch_setup(manifest, private)
+    with local_file_lock(evidence.root, f"epoch-{epoch_id}"):
+        manifest_path = evidence.epoch_root(epoch_id) / "manifest.json"
+        if manifest_path.is_file():
+            manifest = evidence.load_manifest(epoch_id)
+            if manifest.gcp_project != project:
+                raise RuntimeError(
+                    "the existing epoch belongs to a different GCP project"
+                )
+            private_path = (
+                evidence.epoch_root(epoch_id) / "private" / "holdout-plan.json"
+            )
+            if not private_path.is_file():
+                raise RuntimeError(f"epoch setup is incomplete: {epoch_id}")
+        else:
+            manifest, private = create_experiment_manifest(project, epoch_id=epoch_id)
+            evidence.freeze_epoch_setup(manifest, private)
         controller = TournamentController(manifest, evidence, state=_state(evidence))
         _print_json(controller.epoch_status())
     return 0

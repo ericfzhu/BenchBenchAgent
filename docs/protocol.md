@@ -1,6 +1,6 @@
 # BBA protocol specification
 
-This document gives the normative rules for BBA protocol version `bba.epoch.v1`.
+This document gives the normative rules for BBA protocol version `bba.epoch.v2`.
 The word `must` identifies a required rule.
 
 ## 1. Purpose
@@ -44,11 +44,21 @@ BBA also publishes creator ranks, solver ranks, candidate status, and immutable 
 
 ## 3. Epoch manifest
 
+The BBA source code must contain one versioned Google Cloud serverless model catalog.
+The operator must not supply model IDs, ADK routes, model families, reasoning modes, or locations.
+An update to the cohort must create a new catalog version.
+
+The controller must get the Google Cloud project from Application Default Credentials.
+The controller must use the `global` Google Cloud location for this catalog version.
+The controller must create the public seed and hidden material.
+The controller must generate the manifest from these BBA-owned values.
+
 The controller must freeze the manifest before the first creator run.
 The manifest must contain these items:
 
 - The protocol and schema versions
 - The epoch ID
+- The model catalog version
 - The Google Cloud project and location
 - The model cohort
 - The public seed
@@ -61,12 +71,15 @@ The manifest must contain these items:
 
 The cohort must contain at least four model configurations.
 The cohort must contain at least three model families.
-Each model identity must contain the publisher, model ID, family, and reasoning level.
+Each model identity must contain the publisher, Google Cloud model ID, ADK model route, family, reasoning mode, and tool mode.
 Provider-qualified configurations are different identities.
 
-BBA accepts only serverless Vertex AI model IDs.
-BBA must reject a deployed endpoint resource.
-BBA must reject a direct HTTP model URL.
+BBA must build each identity from its source catalog.
+The source catalog must contain only serverless Google Cloud models.
+The catalog must not contain a deployed endpoint resource or direct HTTP model URL.
+
+The operator must not supply an epoch manifest.
+The manifest is immutable evidence after BBA creates it.
 
 The hidden commitments must contain exactly these names:
 
@@ -75,6 +88,10 @@ The hidden commitments must contain exactly these names:
 - `audit_policy`
 
 Each commitment must be a lowercase SHA-256 digest.
+
+BBA must create the committed objects before the first creator run.
+BBA must save the objects in a sealed local private file.
+BBA must not give that file to a creator or solver process.
 
 ## 4. Model execution
 

@@ -16,6 +16,7 @@ from bba.protocol import (
 from bba.audit import audit_evaluator
 from bba.tournament import TournamentController
 from bba.adk_runtime import AdkCreatorBackend, AdkSolverBackend, build_adk_backends
+from bba.catalog import CATALOG_VERSION, SERVERLESS_COHORT
 from bba.evidence import EvidenceStore
 from bba.state import LocalStateStore
 
@@ -31,6 +32,8 @@ __all__ = [
     "TournamentController",
     "AdkCreatorBackend",
     "AdkSolverBackend",
+    "CATALOG_VERSION",
+    "SERVERLESS_COHORT",
     "audit_evaluator",
     "build_adk_backends",
 ]

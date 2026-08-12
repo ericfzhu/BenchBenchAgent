@@ -31,6 +31,11 @@ BBA uses Google Cloud only for serverless model inference.
 It does not use Cloud Run, Cloud Storage, Firestore, Cloud Tasks, or a deployed model endpoint.
 Google Python Agent Development Kit (ADK) 2.6.3 controls each model session.
 
+BBA owns the model cohort and all model routes.
+The operator does not supply a manifest, model ID, provider, or location.
+BBA uses a versioned source catalog and the Google Cloud `global` location.
+An epoch stores a complete copy of this catalog in its immutable manifest.
+
 The local sandbox must stop network access and host file access for generated code.
 BBA stops if the sandbox is not available.
 
@@ -71,30 +76,39 @@ Check the local sandbox:
 Enable Vertex AI and create local Application Default Credentials.
 
 ```bash
+gcloud config set project PROJECT_ID
 gcloud services enable aiplatform.googleapis.com
 gcloud auth application-default login
-export GOOGLE_CLOUD_PROJECT="your-project-id"
-export GOOGLE_CLOUD_LOCATION="global"
-export GOOGLE_GENAI_USE_ENTERPRISE="TRUE"
 ```
 
-Confirm that each selected Model Garden card shows `Serverless`.
-Do not use a card that shows `Self-deployed`.
+Accept the Model Garden terms for the models in the BBA catalog.
+BBA sets the ADK location and Google Cloud mode.
+If ADC cannot find the project, set `GOOGLE_CLOUD_PROJECT`.
 
-## Run an epoch
-
-Copy the example manifest.
-Change the project, model IDs, limits, and hidden commitments.
+Show the catalog:
 
 ```bash
-cp examples/serverless-pilot-manifest.json epoch-manifest.json
+.venv/bin/bba catalog
 ```
+
+## Run an epoch
 
 Create the local epoch:
 
 ```bash
 .venv/bin/bba epoch create \
-  --manifest epoch-manifest.json \
+  --evidence-root .bba
+```
+
+BBA gets the project from ADC.
+BBA creates the epoch ID, public seed, hidden seeds, audit commitments, and immutable manifest.
+The command prints the new epoch ID.
+
+You can supply a readable local ID if required:
+
+```bash
+.venv/bin/bba epoch create \
+  --epoch-id my-first-epoch \
   --evidence-root .bba
 ```
 
@@ -154,7 +168,6 @@ A timeout or provider error is not a zero score.
 
 - [Protocol specification](docs/protocol.md): Required rules for one epoch.
 - [Operations guide](docs/operations.md): Local setup, commands, recovery, review, and audit.
-- [Serverless pilot manifest](examples/serverless-pilot-manifest.json): A small cohort template.
 
 ## Main Python interfaces
 
