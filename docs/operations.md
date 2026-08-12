@@ -41,6 +41,16 @@ Google documents the current Vertex AI setup in the [Vertex AI quickstart](https
 
 ## 3. Install BBA
 
+On Ubuntu, install Bubblewrap:
+
+```bash
+sudo apt-get update
+sudo apt-get install bubblewrap
+```
+
+The Ubuntu kernel must permit Bubblewrap to make an unprivileged user namespace.
+BBA checks this function before it starts an epoch.
+
 Create a virtual environment and install BBA:
 
 ```bash
@@ -113,8 +123,11 @@ Run this command:
 .venv/bin/bba sandbox-status
 ```
 
+On Ubuntu, the result must show `linux-bubblewrap` and `available: true`.
 On macOS, the result must show `macos-seatbelt` and `available: true`.
 BBA stops before inference if the required sandbox is not available.
+Create and run one epoch on the same operating-system backend.
+The immutable manifest records this backend.
 
 The sandbox has no network access.
 The sandbox cannot read controller credentials, other candidates, or holdout files.

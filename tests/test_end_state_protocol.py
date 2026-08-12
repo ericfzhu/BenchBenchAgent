@@ -114,6 +114,10 @@ class TestEndStateProtocol(unittest.TestCase):
         with self.assertRaises(ValueError):
             SandboxCapabilities(backend="gcp-cloud-run")
 
+    def test_linux_bubblewrap_backend_is_supported(self):
+        capabilities = SandboxCapabilities(backend="linux-bubblewrap")
+        self.assertEqual(capabilities.backend, "linux-bubblewrap")
+
     def test_non_success_cell_cannot_carry_score(self):
         with self.assertRaises(ValueError):
             SolverCell(

@@ -1,7 +1,7 @@
 # BBA implementation status
 
 This document records the implementation and verification state.
-It applies to BBA version `0.8.0` and protocol `bba.epoch.v4`.
+It applies to BBA version `0.8.1` and protocol `bba.epoch.v4`.
 The [protocol specification](protocol.md) is the normative source.
 The [completion plan](implementation-plan.md) gives the work order and acceptance gates.
 
@@ -24,7 +24,7 @@ The [completion plan](implementation-plan.md) gives the work order and acceptanc
 | 5. Incomplete-panel ranking | `Implemented` | An incomplete or invalid row stays in the matrix and has `rank: null`. It does not enter solver aggregates. |
 | 6. Human promotion gate | `Implemented` | Approval checks mechanical validity, panel completeness, final-round eligibility, six answers, six structured findings, and escalation rules. Records use Ed25519. The trust registry stores public keys only. |
 | 7. Dependency isolation | `Implemented` | BBA accepts standard-library packages or exact hashed wheels from the local catalog. Installation uses local wheels with no dependency resolution. Validation stores environment digests. |
-| 8. Sandbox conformance | `Partial` | The macOS backend denies network and unrelated host paths. It uses temporary home and temporary directories. CPU, memory, process, file, and wall limits fail closed. A security suite tests the main boundaries. More stress tests for each resource limit remain useful. |
+| 8. Sandbox conformance | `Partial` | Ubuntu uses Bubblewrap namespaces. macOS uses Seatbelt. Both backends deny network and unrelated host paths. They use temporary home and temporary directories. CPU, memory, process, file, and wall limits fail closed. The same security suite tests both backends. The Ubuntu CI job must pass before this item can be `Implemented`. |
 | 9. Evaluator version binding | `Implemented` | The manifest stores a root digest and component digests for bound source, prompts, protocol, catalog, runtime, and installed controller packages. |
 | 10. Holdout retirement | `Implemented` | A cross-epoch append-only registry records committed, opened, and retired states. It rejects reused or retired commitments. |
 | 11. Live Vertex verification | `External proof required` | `bba epoch preflight` checks all routes with a small ADK tool call, usage metadata, global routing, behavior settings, and returned model metadata when available. No paid record exists in this repository. |
@@ -32,7 +32,7 @@ The [completion plan](implementation-plan.md) gives the work order and acceptanc
 | 13. Full production epoch | `External proof required` | The complete local fixture passes. A paid all-catalog epoch, controlled live interruption, and independent human reviews have not run. |
 | 14. Cost estimate and hard limits | `Partial` | BBA reports invocation and token ceilings. SQLite reservations enforce epoch call and token limits across retries and resume. A versioned price catalog fails visibly when an exact published price is absent. Current exact prices are not recorded. |
 | 15. Bounded concurrency | `Implemented` | `BoundedScheduler` runs public solver cells with deterministic work IDs, a global limit, and a per-publisher limit. Creator rounds, validation, and the public-to-hidden barrier remain ordered. Resume and retry tests run with this scheduler. |
-| 16. Continuous integration | `Implemented` | CI runs compilation, tests, diff checks, package build, and the supported macOS security suite. A separate manual workflow performs the paid Vertex smoke test with workload identity. |
+| 16. Continuous integration | `Implemented` | CI runs compilation, tests, diff checks, package build, and separate Ubuntu and macOS security jobs. A separate manual workflow performs the paid Vertex smoke test with workload identity. |
 
 ## Local verification
 
@@ -54,8 +54,11 @@ The local suite covers these flows:
 - Preflight behavior with deterministic ADK models
 - Bounded scheduler and budget reservations
 
-The macOS security job runs only when the audited Seatbelt backend is available.
+The Ubuntu security job installs Bubblewrap and requires the complete security suite to run.
+The macOS security job requires Seatbelt.
 A skipped security job is not sandbox proof.
+The Linux backend cannot run on the macOS development host.
+Use the Ubuntu CI result or an Ubuntu host as the Linux conformance record.
 
 ## Remaining acceptance work
 

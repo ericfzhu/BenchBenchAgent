@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from bba.cli import main
 from bba.protocol import digest_json
+from bba.runtime import expected_sandbox_backend
 from bba.state import LocalStateStore
 
 
@@ -59,6 +60,7 @@ class TestLocalEpochCli(unittest.TestCase):
             private = json.loads(private_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["catalog_version"], "gcp-serverless-2026-08-12")
             self.assertEqual(manifest["gcp_location"], "global")
+            self.assertEqual(manifest["sandbox"]["backend"], expected_sandbox_backend())
             self.assertEqual(len(manifest["cohort"]), 12)
             self.assertEqual(
                 manifest["hidden_commitments"],

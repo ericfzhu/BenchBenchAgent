@@ -48,6 +48,7 @@ def _sandbox_status(_args: argparse.Namespace) -> int:
     sandbox = SecureSandbox()
     _print_json({
         "backend": sandbox.backend,
+        "expected_backend": sandbox.expected_backend,
         "available": sandbox.available,
         "unavailable_reason": sandbox.unavailable_reason or None,
         "fail_closed": True,

@@ -388,7 +388,7 @@ This milestone closes status item 16.
 ### Implementation
 
 - Add an unprivileged CI workflow for compilation, unit tests, schema tests, replay tests, integration fixtures, and `git diff --check`.
-- Add a macOS job for the Seatbelt security suite.
+- Add Ubuntu and macOS jobs for the Bubblewrap and Seatbelt security suites.
 - Add a package-build and clean-install job.
 - Keep credentials out of all normal CI jobs.
 - Add a separate manual paid workflow for live Vertex smoke tests.
@@ -456,7 +456,7 @@ Use these groups so that a passing local fixture is not confused with production
 | Integration | Three-round local epoch with fixture agents | Yes |
 | Replay | Rebuild scores from immutable evidence | Yes |
 | Fault injection | Retry, interruption, resume, and atomic publication | Yes |
-| Security | Sandbox and dependency isolation | On supported macOS CI |
+| Security | Sandbox and dependency isolation | On Ubuntu and macOS CI |
 | Live smoke | Small request to each Vertex AI model | Manual and paid |
 | Production acceptance | Complete catalog epoch and sealed audit | Manual and paid |
 

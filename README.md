@@ -11,7 +11,7 @@ BBA makes a creator-by-solver score matrix.
 BBA also makes separate creator and solver ranks.
 An independent reviewer must approve a benchmark before BBA adds it to the canonical registry.
 A sealed audit tests the public evaluator after the public epoch is closed.
-Version `0.8.0` runs the hidden experiment from committed local material.
+Version `0.8.1` runs the hidden experiment from committed local material.
 Paid Vertex and full production acceptance evidence are still required.
 See the [implementation status](docs/implementation-status.md) before you run a production epoch.
 
@@ -40,6 +40,9 @@ The operator does not supply a manifest, model ID, provider, or location.
 BBA uses a versioned source catalog and the Google Cloud `global` location.
 An epoch stores a complete copy of this catalog in its immutable manifest.
 
+BBA supports local execution on Ubuntu Linux and macOS.
+Ubuntu uses Bubblewrap namespaces.
+macOS uses Seatbelt.
 The local sandbox must stop network access and host file access for generated code.
 BBA stops if the sandbox is not available.
 
@@ -57,6 +60,15 @@ A local file lock prevents two processes from changing one epoch at the same tim
 ## Install
 
 Use Python 3.10 or later.
+
+On Ubuntu, install Bubblewrap first:
+
+```bash
+sudo apt-get update
+sudo apt-get install bubblewrap
+```
+
+The Ubuntu kernel must permit Bubblewrap to make an unprivileged user namespace.
 
 ```bash
 python3.10 -m venv .venv

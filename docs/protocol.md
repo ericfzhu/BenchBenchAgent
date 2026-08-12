@@ -231,6 +231,9 @@ The instance record must bind the snapshot ID, design digest, seed, item count, 
 BBA must treat creator code as untrusted code.
 BBA must use an approved operating-system boundary for each command.
 BBA must stop if the boundary is not available.
+BBA uses Bubblewrap namespaces on Ubuntu Linux.
+BBA uses Seatbelt on macOS.
+An epoch manifest must name the backend for the local operating system.
 
 The sandbox must have these properties:
 

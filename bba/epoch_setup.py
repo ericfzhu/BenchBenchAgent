@@ -10,7 +10,8 @@ from typing import Any, Optional
 from bba.adk_runtime import CREATOR_INSTRUCTION, SOLVER_INSTRUCTION
 from bba.catalog import CATALOG_DIGEST, CATALOG_VERSION, GCP_LOCATION, SERVERLESS_COHORT
 from bba.evaluator_identity import build_evaluator_identity
-from bba.protocol import ExperimentManifest, digest_json, to_primitive
+from bba.protocol import ExperimentManifest, SandboxCapabilities, digest_json, to_primitive
+from bba.runtime import expected_sandbox_backend
 
 
 def new_epoch_id() -> str:
@@ -77,5 +78,6 @@ def create_experiment_manifest(
         solver_prompt_digest=solver_prompt_digest,
         evaluator_version=evaluator["root_digest"],
         evaluator_components=evaluator,
+        sandbox=SandboxCapabilities(backend=expected_sandbox_backend()),
     )
     return manifest, hidden
