@@ -111,7 +111,7 @@ class LocalFixtureSandbox:
         if not acknowledge_unsafe:
             raise ValueError("LocalFixtureSandbox requires acknowledge_unsafe=True")
 
-    def run_python(self, script, args, workspace, timeout_seconds, cwd=None):
+    def run_python(self, script, args, workspace, timeout_seconds, cwd=None, env_overrides=None):
         script = Path(script).resolve()
         workspace = Path(workspace).resolve()
         if workspace not in script.parents:
@@ -125,6 +125,8 @@ class LocalFixtureSandbox:
             "PYTHONPATH": "",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
+        if env_overrides:
+            environment.update(env_overrides)
         Path(environment["HOME"]).mkdir(exist_ok=True)
         Path(environment["TMPDIR"]).mkdir(exist_ok=True)
         try:

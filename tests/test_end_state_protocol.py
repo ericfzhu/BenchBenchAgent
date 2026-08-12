@@ -10,6 +10,7 @@ from pathlib import Path
 from bba.audit import DefectPair, audit_evaluator
 from bba.catalog import CATALOG_VERSION, GCP_LOCATION, SERVERLESS_COHORT
 from bba.damage import create_damage_variants
+from bba.dependencies import LocalWheelCatalog, build_dependency_environment, parse_lockfile
 from bba.evidence import EvidenceStore, tree_digest
 from bba.protocol import (
     AuditStatus,
@@ -171,6 +172,24 @@ class TestEndStateProtocol(unittest.TestCase):
             )
             self.assertFalse(invalid.passed)
             self.assertTrue(any("missing generated" in error or "gold_private" in error for error in invalid.errors))
+
+    def test_standard_library_dependency_environment_is_digest_bound(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            lock = root / "requirements.lock"
+            lock.write_text("# Standard library only\n", encoding="utf-8")
+            catalog = LocalWheelCatalog(
+                Path(__file__).resolve().parents[1] / "dependency-wheels"
+            )
+            environment = build_dependency_environment(
+                lock, catalog, root / "environments"
+            )
+            self.assertIsNone(environment.site_packages)
+            self.assertTrue(environment.environment_digest)
+            self.assertEqual(parse_lockfile(lock), ())
+            lock.write_text("requests==2.0.0\n", encoding="utf-8")
+            with self.assertRaises(ValueError):
+                parse_lockfile(lock)
 
     def test_invalid_validation_does_not_claim_an_instance(self):
         sandbox = LocalFixtureSandbox(acknowledge_unsafe=True)

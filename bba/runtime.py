@@ -31,9 +31,10 @@ class SecureSandbox:
     Local macOS hosts use Seatbelt. BBA has no unrestricted or hosted fallback.
     """
 
-    def __init__(self, memory_mb: int = 2048, process_limit: int = 64):
+    def __init__(self, memory_mb: int = 2048, process_limit: int = 64, cpu_seconds: int = 600):
         self.memory_mb = memory_mb
         self.process_limit = process_limit
+        self.cpu_seconds = cpu_seconds
         self.unavailable_reason = ""
         if platform.system() == "Darwin" and Path("/usr/bin/sandbox-exec").exists():
             probe = subprocess.run(
@@ -51,6 +52,11 @@ class SecureSandbox:
         else:
             self.backend = "unavailable"
             self.unavailable_reason = "no audited sandbox backend is installed"
+        required = ("RLIMIT_AS", "RLIMIT_NPROC", "RLIMIT_FSIZE", "RLIMIT_CPU")
+        missing = [name for name in required if not hasattr(resource, name)]
+        if self.available and missing:
+            self.backend = "unavailable"
+            self.unavailable_reason = "mandatory resource controls are unavailable: " + ", ".join(missing)
 
     @property
     def available(self) -> bool:
@@ -79,7 +85,6 @@ class SecureSandbox:
 (allow signal (target self))
 (allow sysctl-read)
 (allow mach-lookup)
-(allow file-read-metadata)
 (allow file-read*
 {read_rules}
     (subpath "{quoted(workspace)}"))
@@ -116,9 +121,16 @@ class SecureSandbox:
             "LANG": "C.UTF-8",
         }
         if env_overrides:
-            prohibited = {"HOME", "PYTHONPATH", "TMPDIR"}.intersection(env_overrides)
+            prohibited = {"HOME", "TMPDIR"}.intersection(env_overrides)
             if prohibited:
                 raise ValueError(f"cannot override protected sandbox variables: {sorted(prohibited)}")
+            python_path = env_overrides.get("PYTHONPATH")
+            if python_path is not None:
+                dependency_root = Path(python_path).resolve()
+                try:
+                    dependency_root.relative_to(workspace)
+                except ValueError as exc:
+                    raise ValueError("sandbox PYTHONPATH must stay in the workspace") from exc
             clean_env.update(env_overrides)
 
         selected_cwd = (cwd or workspace).resolve()
@@ -138,16 +150,15 @@ class SecureSandbox:
                 (resource.RLIMIT_AS, memory),
                 (resource.RLIMIT_NPROC, self.process_limit),
                 (resource.RLIMIT_FSIZE, 512 * 1024 * 1024),
+                (resource.RLIMIT_CPU, min(self.cpu_seconds, timeout_seconds)),
             )
             for limit_name, value in requested:
                 try:
                     _soft, hard = resource.getrlimit(limit_name)
                     applied = value if hard == resource.RLIM_INFINITY else min(value, hard)
                     resource.setrlimit(limit_name, (applied, applied))
-                except (OSError, ValueError):
-                    # Seatbelt and the controller timeout remain mandatory; a
-                    # platform may not support every supplementary rlimit.
-                    continue
+                except (OSError, ValueError) as exc:
+                    raise RuntimeError(f"cannot apply mandatory resource limit {limit_name}") from exc
 
         process = subprocess.Popen(
             wrapped,
@@ -176,10 +187,12 @@ class SecureSandbox:
         workspace: Path,
         timeout_seconds: int,
         cwd: Optional[Path] = None,
+        env_overrides: Optional[Dict[str, str]] = None,
     ) -> CommandResult:
         return self.run(
             [str(Path(sys.executable).resolve()), str(Path(script).resolve())] + list(args),
             workspace=workspace,
             timeout_seconds=timeout_seconds,
             cwd=cwd,
+            env_overrides=env_overrides,
         )

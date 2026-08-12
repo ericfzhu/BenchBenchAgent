@@ -87,6 +87,7 @@ class ResourceBudget:
     max_llm_calls: int = 64
     memory_mb: int = 2048
     process_limit: int = 64
+    cpu_seconds: int = 600
 
     def __post_init__(self) -> None:
         if min(
@@ -96,6 +97,7 @@ class ResourceBudget:
             self.max_llm_calls,
             self.memory_mb,
             self.process_limit,
+            self.cpu_seconds,
         ) <= 0:
             raise ValueError("resource budgets must be positive")
 
@@ -338,6 +340,9 @@ class ValidationRecord:
     errors: tuple = ()
     instance_digest: Optional[str] = None
     alternate_payload_digest: Optional[str] = None
+    dependency_environment_digest: Optional[str] = None
+    dependency_lock_digest: Optional[str] = None
+    dependency_catalog_digest: Optional[str] = None
 
 
 @dataclass(frozen=True)

@@ -149,6 +149,7 @@ def _epoch_run(args: argparse.Namespace) -> int:
         sandbox = SecureSandbox(
             memory_mb=manifest.budget.memory_mb,
             process_limit=manifest.budget.process_limit,
+            cpu_seconds=manifest.budget.cpu_seconds,
         )
         if not sandbox.available:
             raise RuntimeError(sandbox.unavailable_reason or "secure local sandbox is unavailable")

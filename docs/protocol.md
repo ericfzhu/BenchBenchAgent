@@ -194,8 +194,13 @@ Each gold row and prediction row must contain exactly `id` and `answer`.
 The score report must use schema version 2.
 It must contain `total`, `correct`, and `accuracy`.
 
-The lock file must use exact package versions.
-It must not contain a URL or a source-control dependency.
+The lock file must use exact package versions and SHA-256 hashes.
+Each non-comment line must use `NAME==VERSION --hash=sha256:DIGEST`.
+It must not contain a URL, source archive, source-control dependency, or transitive dependency.
+BBA must install dependencies only from its versioned local wheel catalog.
+BBA must use no network during installation.
+BBA must bind the catalog, lock file, interpreter, and installed files to the dependency environment evidence.
+BBA must use the same environment for validation, solving, and replay.
 
 After the design freezes, BBA runs the generator with the round seed.
 BBA stores the result as one immutable evaluation instance.

@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from bba.evidence import tree_digest
 from bba.protocol import ScoreSummary, ValidationRecord
+from bba.dependencies import LocalWheelCatalog, build_dependency_environment
 from bba.runtime import SecureSandbox
 
 
@@ -136,12 +137,9 @@ def write_jsonl(path: Path, rows: Iterable[Mapping[str, Any]]) -> None:
 
 
 def validate_lockfile(path: Path) -> None:
-    for number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "==" not in line or line.startswith(("-", "http:", "https:", "git+")):
-            raise ValueError(f"requirements.lock line {number} is not an exact package pin")
+    from bba.dependencies import parse_lockfile
+
+    parse_lockfile(path)
 
 
 def public_bundle_leaks(bundle: Path, gold: Sequence[Mapping[str, Any]]) -> List[str]:
@@ -173,22 +171,65 @@ def public_bundle_leaks(bundle: Path, gold: Sequence[Mapping[str, Any]]) -> List
 
 
 class PackageValidator:
-    def __init__(self, sandbox: SecureSandbox, sample_count: int = 30, timeout_seconds: int = 600):
+    def __init__(
+        self,
+        sandbox: SecureSandbox,
+        sample_count: int = 30,
+        timeout_seconds: int = 600,
+        dependency_catalog: Optional[LocalWheelCatalog] = None,
+        dependency_cache: Optional[Path] = None,
+    ):
         self.sandbox = sandbox
         self.sample_count = sample_count
         self.timeout_seconds = timeout_seconds
+        self.dependency_catalog = dependency_catalog or LocalWheelCatalog(
+            Path(__file__).resolve().parents[1] / "dependency-wheels"
+        )
+        self.dependency_cache = Path(
+            dependency_cache or Path(tempfile.gettempdir()) / "bba-dependency-environments"
+        ).resolve()
+        self._environment_by_workspace: Dict[str, Any] = {}
+
+    def _dependency_environment(self, package: Path, workspace: Path):
+        key = str(Path(workspace).resolve())
+        existing = self._environment_by_workspace.get(key)
+        if existing is not None:
+            return existing
+        environment = build_dependency_environment(
+            Path(package) / "requirements.lock",
+            self.dependency_catalog,
+            self.dependency_cache,
+        )
+        local_site = None
+        if environment.site_packages is not None:
+            local_site = Path(workspace) / ".bba-dependencies"
+            shutil.copytree(environment.site_packages, local_site)
+        value = (environment, {"PYTHONPATH": str(local_site)} if local_site else {})
+        self._environment_by_workspace[key] = value
+        return value
+
+    def _run_python(self, package: Path, workspace: Path, script: Path, args: List[str], cwd: Path):
+        _environment, overrides = self._dependency_environment(package, workspace)
+        return self.sandbox.run_python(
+            script,
+            args,
+            workspace=workspace,
+            cwd=cwd,
+            timeout_seconds=self.timeout_seconds,
+            env_overrides=overrides,
+        )
 
     def _generate(self, package: Path, workspace: Path, seed: int) -> Tuple[str, List[Dict[str, Any]], List[Dict[str, Any]]]:
         bundle = package / "solver_bundle"
         (bundle / "SOLVER_MANIFEST.json").unlink(missing_ok=True)
         (bundle / "items_private_sample.jsonl").unlink(missing_ok=True)
         (package / "gold_private_sample.jsonl").unlink(missing_ok=True)
-        result = self.sandbox.run_python(
+        result = self._run_python(
+            package,
+            workspace,
             package / "generator.py",
             ["--sample-count", str(self.sample_count), "--seed", str(seed), "--out-dir", "."],
-            workspace=workspace,
             cwd=package,
-            timeout_seconds=self.timeout_seconds,
         )
         if result.returncode != 0:
             raise ValueError(f"generator failed: {result.stderr[-1000:]}")
@@ -209,12 +250,12 @@ class PackageValidator:
         return payload_digest(package), gold, items
 
     def _score_controls(self, package: Path, workspace: Path, gold: List[Dict[str, Any]], items: List[Dict[str, Any]]) -> None:
-        verifier = self.sandbox.run_python(
+        verifier = self._run_python(
+            package,
+            workspace,
             package / "verifier.py",
             ["--items", "solver_bundle/items_private_sample.jsonl", "--gold", "gold_private_sample.jsonl"],
-            workspace=workspace,
             cwd=package,
-            timeout_seconds=self.timeout_seconds,
         )
         if verifier.returncode != 0:
             raise ValueError(f"verifier failed: {verifier.stderr[-1000:]}")
@@ -227,12 +268,12 @@ class PackageValidator:
         )
         for predictions, expected in ((gold_predictions, self.sample_count), (wrong_predictions, 0)):
             output = package / f".controller_score_{expected}.json"
-            result = self.sandbox.run_python(
+            result = self._run_python(
+                package,
+                workspace,
                 package / "scorer.py",
                 ["--gold", "gold_private_sample.jsonl", "--predictions", predictions.name, "--out", output.name],
-                workspace=workspace,
                 cwd=package,
-                timeout_seconds=self.timeout_seconds,
             )
             if result.returncode != 0 or not output.is_file():
                 raise ValueError(f"scorer failed for {predictions.name}: {result.stderr[-1000:]}")
@@ -292,6 +333,7 @@ class PackageValidator:
         same_digest: Optional[str] = None
         different_digest: Optional[str] = None
         frozen_instance_digest: Optional[str] = None
+        dependency_environment = None
         try:
             design_root = Path(design_root).resolve()
             validate_artifact_tree(design_root)
@@ -306,6 +348,11 @@ class PackageValidator:
             if not any((bundle / name).is_file() for name in ("README.md", "solver_packet.md")):
                 raise ValueError("design has no public solver instructions")
             validate_lockfile(design_root / "requirements.lock")
+            dependency_environment = build_dependency_environment(
+                design_root / "requirements.lock",
+                self.dependency_catalog,
+                self.dependency_cache,
+            )
             spec = json.loads((design_root / "benchmark_spec.json").read_text(encoding="utf-8"))
             if not str(spec.get("capability_claim", "")).strip():
                 raise ValueError("benchmark_spec.json requires capability_claim")
@@ -358,4 +405,16 @@ class PackageValidator:
             errors=tuple(errors),
             instance_digest=frozen_instance_digest or same_digest,
             alternate_payload_digest=different_digest,
+            dependency_environment_digest=(
+                dependency_environment.environment_digest
+                if dependency_environment is not None else None
+            ),
+            dependency_lock_digest=(
+                dependency_environment.lock_digest
+                if dependency_environment is not None else None
+            ),
+            dependency_catalog_digest=(
+                dependency_environment.catalog_digest
+                if dependency_environment is not None else None
+            ),
         )
