@@ -11,8 +11,8 @@ from enum import Enum
 from typing import Any, Dict, List, Mapping, Optional
 
 
-PROTOCOL_VERSION = "bba.epoch.v6"
-SCHEMA_VERSION = 6
+PROTOCOL_VERSION = "bba.epoch.v7"
+SCHEMA_VERSION = 7
 
 
 class StrEnum(str, Enum):
@@ -46,6 +46,14 @@ class PromotionDecision(StrEnum):
     APPROVED = "approved"
     REJECTED = "rejected"
     ESCALATED = "escalated"
+
+
+class SolvabilityCertificateType(StrEnum):
+    HUMAN_RECONSTRUCTION = "human_reconstruction"
+    INDEPENDENT_REFERENCE = "independent_reference"
+    MACHINE_VERIFIABLE_WITNESS = "machine_verifiable_witness"
+    TRUSTED_EXTERNAL_SOURCE = "trusted_external_source"
+    INDEPENDENT_SOLVER = "independent_solver"
 
 
 class AuditStatus(StrEnum):
@@ -134,7 +142,7 @@ class DecisionThresholds:
     rounds: int = 3
     solver_repetitions: int = 3
     rejection_accuracy: float = 0.50
-    reviewer_sample_count: int = 6
+    human_certificate_sample_count: int = 6
     audit_min_spearman: float = 0.50
     audit_min_pairwise: float = 0.70
     audit_min_utility_recovery: float = 0.90
@@ -147,8 +155,8 @@ class DecisionThresholds:
             raise ValueError("solver_repetitions must be positive")
         if not 0 < self.rejection_accuracy <= 1:
             raise ValueError("rejection_accuracy must be in (0, 1]")
-        if self.reviewer_sample_count != 6 or self.sample_count < 6:
-            raise ValueError("BBA v1 requires a six-item human review sample")
+        if self.human_certificate_sample_count != 6 or self.sample_count < 6:
+            raise ValueError("BBA requires six items for a human solvability certificate")
         for value in (
             self.audit_min_pairwise,
             self.audit_min_utility_recovery,
@@ -430,6 +438,7 @@ class ReviewFindings:
     scorer_consistent: bool
     no_arbitrary_obscurity: bool
     useful_evaluation: bool
+    solvability_certificate_adequate: bool
 
     @property
     def all_passed(self) -> bool:
@@ -442,8 +451,7 @@ class PromotionRecord:
     instance_digest: str
     reviewer_id: str
     decision: PromotionDecision
-    sampled_item_ids: tuple
-    reconstructed_answers_digest: str
+    solvability_certificate_digest: str
     findings: ReviewFindings
     evidence_digests: Mapping[str, str]
     limitations: tuple
@@ -456,6 +464,54 @@ class PromotionRecord:
         payload = to_primitive(self)
         payload["signature"] = ""
         return payload
+
+
+@dataclass(frozen=True)
+class SolvabilityCertificate:
+    snapshot_id: str
+    design_digest: str
+    instance_digest: str
+    certificate_type: SolvabilityCertificateType
+    issuer_id: str
+    independence_basis: str
+    verification_method: str
+    scope: str
+    evidence_digests: Mapping[str, str]
+    sampled_item_ids: tuple = ()
+    answer_digest: Optional[str] = None
+    timestamp: str = ""
+
+    def __post_init__(self) -> None:
+        if not all((
+            self.snapshot_id,
+            self.design_digest,
+            self.instance_digest,
+            self.issuer_id,
+            self.independence_basis,
+            self.verification_method,
+            self.scope,
+            self.timestamp,
+        )):
+            raise ValueError("solvability certificate fields cannot be blank")
+        if not self.evidence_digests or any(
+            not re.fullmatch(r"[a-zA-Z0-9._-]+", name)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            for name, digest in self.evidence_digests.items()
+        ):
+            raise ValueError("solvability certificate evidence requires named SHA-256 digests")
+        if len(set(self.sampled_item_ids)) != len(self.sampled_item_ids):
+            raise ValueError("solvability certificate item IDs must be unique")
+        if self.certificate_type == SolvabilityCertificateType.HUMAN_RECONSTRUCTION:
+            if len(self.sampled_item_ids) != 6 or not self.answer_digest:
+                raise ValueError("human reconstruction requires six items and an answer digest")
+        elif self.sampled_item_ids or self.answer_digest:
+            raise ValueError(
+                "non-human solvability certificates require independent evidence digests"
+            )
+
+    @property
+    def digest(self) -> str:
+        return digest_json(self)
 
 
 def to_primitive(value: Any) -> Any:
@@ -563,7 +619,15 @@ def validation_record_from_mapping(value: Mapping[str, Any]) -> ValidationRecord
 def promotion_record_from_mapping(value: Mapping[str, Any]) -> PromotionRecord:
     data = dict(value)
     data["decision"] = PromotionDecision(data["decision"])
-    data["sampled_item_ids"] = tuple(data.get("sampled_item_ids", ()))
     data["limitations"] = tuple(data.get("limitations", ()))
     data["findings"] = ReviewFindings(**dict(data["findings"]))
     return PromotionRecord(**data)
+
+
+def solvability_certificate_from_mapping(
+    value: Mapping[str, Any],
+) -> SolvabilityCertificate:
+    data = dict(value)
+    data["certificate_type"] = SolvabilityCertificateType(data["certificate_type"])
+    data["sampled_item_ids"] = tuple(data.get("sampled_item_ids", ()))
+    return SolvabilityCertificate(**data)

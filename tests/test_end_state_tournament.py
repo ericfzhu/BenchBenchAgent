@@ -22,6 +22,7 @@ from bba.protocol import (
     PromotionDecision,
     ReviewFindings,
     SandboxCapabilities,
+    SolvabilityCertificateType,
     canonical_json,
     digest_json,
     to_primitive,
@@ -126,6 +127,7 @@ class TestEndStateTournament(unittest.TestCase):
             scorer_consistent=True,
             no_arbitrary_obscurity=True,
             useful_evaluation=True,
+            solvability_certificate_adequate=True,
         )
 
     def test_automatic_sealed_audit_uses_no_score_files(self):
@@ -265,7 +267,7 @@ class TestEndStateTournament(unittest.TestCase):
             self.assertEqual(chain[2].parent_snapshot_id, chain[1].snapshot_id)
 
         final_snapshots = [snapshot for snapshot in self.controller.snapshots if snapshot.round_index == 2]
-        for snapshot in final_snapshots:
+        for snapshot_index, snapshot in enumerate(final_snapshots):
             gold = {
                 row["id"]: row["answer"]
                 for row in read_jsonl_strict(
@@ -273,11 +275,64 @@ class TestEndStateTournament(unittest.TestCase):
                     / "gold_private_sample.jsonl"
                 )
             }
-            selected = self.controller.select_review_items(snapshot)
+            selected = self.controller.select_human_certificate_items(snapshot)
+            with tempfile.NamedTemporaryFile("w", suffix=".md") as evidence_file:
+                evidence_file.write("Independent fixture solvability evidence.\n")
+                evidence_file.flush()
+                certificate_type = (
+                    SolvabilityCertificateType.INDEPENDENT_REFERENCE
+                    if snapshot_index == 0
+                    else SolvabilityCertificateType.HUMAN_RECONSTRUCTION
+                )
+                certificate = self.controller.record_solvability_certificate(
+                    snapshot,
+                    certificate_type,
+                    issuer_id="certificate-issuer",
+                    independence_basis="Issuer did not create the benchmark.",
+                    verification_method=(
+                        "Compared the frozen instance with an independent reference."
+                        if snapshot_index == 0
+                        else "Reconstructed six controller-selected answers."
+                    ),
+                    scope=(
+                        "All items in the frozen instance."
+                        if snapshot_index == 0
+                        else "Six sampled items from the frozen instance."
+                    ),
+                    evidence_files={"working-notes.md": Path(evidence_file.name)},
+                    reconstructed_answers=(
+                        None
+                        if snapshot_index == 0
+                        else {item_id: gold[item_id] for item_id in selected}
+                    ),
+                )
+                repeated_certificate = self.controller.record_solvability_certificate(
+                    snapshot,
+                    certificate_type,
+                    issuer_id="certificate-issuer",
+                    independence_basis="Issuer did not create the benchmark.",
+                    verification_method=(
+                        "Compared the frozen instance with an independent reference."
+                        if snapshot_index == 0
+                        else "Reconstructed six controller-selected answers."
+                    ),
+                    scope=(
+                        "All items in the frozen instance."
+                        if snapshot_index == 0
+                        else "Six sampled items from the frozen instance."
+                    ),
+                    evidence_files={"working-notes.md": Path(evidence_file.name)},
+                    reconstructed_answers=(
+                        None
+                        if snapshot_index == 0
+                        else {item_id: gold[item_id] for item_id in selected}
+                    ),
+                )
+                self.assertEqual(repeated_certificate, certificate)
             signed = self.controller.record_human_review(
                 snapshot,
                 reviewer_id="independent-reviewer",
-                reconstructed_answers={item_id: gold[item_id] for item_id in selected},
+                solvability_certificate_digest=certificate.digest,
                 decision=PromotionDecision.APPROVED,
                 findings=self.passing_findings,
                 limitations=("Synthetic conformance fixture",),
@@ -289,7 +344,7 @@ class TestEndStateTournament(unittest.TestCase):
             repeated = self.controller.record_human_review(
                 snapshot,
                 reviewer_id="independent-reviewer",
-                reconstructed_answers={item_id: gold[item_id] for item_id in selected},
+                solvability_certificate_digest=certificate.digest,
                 decision=PromotionDecision.APPROVED,
                 findings=self.passing_findings,
                 limitations=("Synthetic conformance fixture",),
@@ -313,6 +368,10 @@ class TestEndStateTournament(unittest.TestCase):
         self.assertEqual(len(public["creator_rankings"]["final_round"]), 4)
         self.assertTrue(all(row["canonical_benchmarks"] == 3 for row in public["solver_ranking"]))
         self.assertFalse(public["hidden_evidence_included"])
+
+        restored = TournamentController(self.manifest, self.controller.evidence)
+        self.assertEqual(len(restored.solvability_certificates), 4)
+        self.assertEqual(len(restored.promotions), 4)
 
         cell_path = self.controller.evidence.record_path(
             self.manifest.epoch_id,
@@ -556,24 +615,69 @@ class TestEndStateTournament(unittest.TestCase):
         snapshot = next(
             item for item in self.controller.snapshots if item.round_index == 2
         )
-        gold = {
-            row["id"]: row["answer"]
-            for row in read_jsonl_strict(
-                Path(self.controller.instances[snapshot.snapshot_id].instance_path)
-                / "gold_private_sample.jsonl"
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as evidence_file:
+            evidence_file.write('{"verified": true}\n')
+            evidence_file.flush()
+            certificate = self.controller.record_solvability_certificate(
+                snapshot,
+                SolvabilityCertificateType.INDEPENDENT_REFERENCE,
+                issuer_id="reference-implementation-owner",
+                independence_basis="Reference implementation was authored independently.",
+                verification_method="Compared all frozen answers with the reference implementation.",
+                scope="All items in the frozen evaluation instance.",
+                evidence_files={"reference-report.json": Path(evidence_file.name)},
             )
-        }
-        selected = self.controller.select_review_items(snapshot)
         failed = replace(self.passing_findings, useful_evaluation=False)
         with self.assertRaisesRegex(ValueError, "construct-validity"):
             self.controller.record_human_review(
                 snapshot,
                 "independent-reviewer",
-                {item_id: gold[item_id] for item_id in selected},
+                certificate.digest,
                 PromotionDecision.APPROVED,
                 failed,
                 (),
                 "reviewer-key-failed",
+                self.review_private_bytes,
+                self.review_public_bytes,
+            )
+
+    def test_certificate_requires_separate_creator_issuer_and_adjudicator(self):
+        self.controller.run_public_epoch()
+        snapshot = next(
+            item for item in self.controller.snapshots if item.round_index == 2
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as evidence_file:
+            evidence_file.write('{"verified": true}\n')
+            evidence_file.flush()
+            evidence_files = {"reference-report.json": Path(evidence_file.name)}
+            with self.assertRaisesRegex(ValueError, "creator cannot issue"):
+                self.controller.record_solvability_certificate(
+                    snapshot,
+                    SolvabilityCertificateType.INDEPENDENT_REFERENCE,
+                    issuer_id=snapshot.creator.artifact_id,
+                    independence_basis="Self-authored evidence.",
+                    verification_method="Compared outputs.",
+                    scope="All items.",
+                    evidence_files=evidence_files,
+                )
+            certificate = self.controller.record_solvability_certificate(
+                snapshot,
+                SolvabilityCertificateType.INDEPENDENT_REFERENCE,
+                issuer_id="independent-issuer",
+                independence_basis="Issuer did not create the benchmark.",
+                verification_method="Compared all answers with an independent reference.",
+                scope="All frozen items.",
+                evidence_files=evidence_files,
+            )
+        with self.assertRaisesRegex(ValueError, "issuer and approving reviewer"):
+            self.controller.record_human_review(
+                snapshot,
+                "independent-issuer",
+                certificate.digest,
+                PromotionDecision.APPROVED,
+                self.passing_findings,
+                (),
+                "issuer-review-key",
                 self.review_private_bytes,
                 self.review_public_bytes,
             )

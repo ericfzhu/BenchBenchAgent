@@ -2,8 +2,8 @@
 
 This plan closes each gap in the [implementation status](implementation-status.md).
 It started from BBA version `0.7.0` and protocol `bba.epoch.v3`.
-The completed work now uses protocol `bba.epoch.v6` and its evidence schema.
-BBA does not convert an older epoch to version 6.
+The completed work now uses protocol `bba.epoch.v7` and its evidence schema.
+BBA does not convert an older epoch to version 7.
 
 The protocol specification remains the normative source.
 Update the protocol before code changes implement a new rule.
@@ -18,7 +18,7 @@ The completed system must obey these limits:
 - BBA does not deploy a model endpoint or another cloud service.
 - BBA owns the model catalog, prompts, behavior settings, budgets, and audit policy.
 - The operator supplies Google Cloud access and starts the epoch.
-- An independent human reviewer supplies a signed review when promotion is required.
+- Independent evidence certifies solvability, and a separate human adjudicator supplies a signed review when promotion is required.
 - Generated benchmark code has no network access and no access to Google Cloud credentials.
 - Public and hidden scores come from stored evidence. The operator does not supply score files.
 
@@ -149,9 +149,9 @@ This milestone closes status item 6.
 
 ### Implementation
 
-- Add explicit reviewer fields for the named capability, public solvability, oracle consistency, scorer consistency, arbitrary obscurity, and evaluation usefulness.
-- Store the six reconstructed answers and their item IDs.
-- Check mechanical validity, panel completeness, final-round status, and review answers inside the promotion method.
+- Add explicit adjudicator fields for the named capability, public-material sufficiency, oracle consistency, scorer consistency, arbitrary obscurity, evaluation usefulness, and certificate adequacy.
+- Store a typed solvability certificate and its evidence digests. Human reconstruction certificates also store the six sampled item IDs and answer digest.
+- Check certificate adequacy, mechanical validity, panel completeness, and final-round status inside the promotion method.
 - Require a second signed review when the first reviewer reports a discrepancy.
 - Add Ed25519 signing and verification.
 - Store the reviewer key ID and public key in a local reviewer trust registry.
@@ -163,7 +163,7 @@ This milestone closes status item 6.
 ### Verification
 
 - Test each promotion condition as a separate negative case.
-- Confirm that one wrong reconstructed answer blocks approval.
+- Confirm that one wrong answer blocks a human reconstruction certificate and that non-human certificates require independent evidence.
 - Confirm that a discrepancy requires a different second reviewer key.
 - Confirm that a changed review record makes signature verification fail.
 - Confirm that a missing or untrusted public key blocks promotion.

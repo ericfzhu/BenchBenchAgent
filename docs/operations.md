@@ -265,20 +265,29 @@ The public run is complete when the phase is `awaiting_review`.
 A failed work item appears in `failed_work`.
 Correct the local or provider fault and run `epoch run` again.
 
-## 12. Record human reviews
+## 12. Certify solvability and record human adjudication
 
-Review only final-round snapshots.
-Get the controller-selected item IDs:
+Certify only final-round snapshots.
+Choose one certificate type:
+
+- `human_reconstruction`
+- `independent_reference`
+- `machine_verifiable_witness`
+- `trusted_external_source`
+- `independent_solver`
+
+The certificate issuer must not be the benchmark creator.
+For a human reconstruction certificate, get the controller-selected item IDs:
 
 ```bash
-.venv/bin/bba epoch review-items \
+.venv/bin/bba epoch certificate-items \
   --epoch-id EPOCH_ID \
   --snapshot-id SNAPSHOT_ID \
   --evidence-root .bba
 ```
 
-The reviewer uses only the candidate's `solver_bundle` directory.
-The reviewer reconstructs all six answers.
+The certificate issuer uses only the candidate's `solver_bundle` directory.
+The issuer reconstructs all six answers.
 Save the answers as one JSON object:
 
 ```json
@@ -289,7 +298,38 @@ Save the answers as one JSON object:
 ```
 
 The real file must contain all six selected IDs.
-Save the six construct-validity findings as one JSON object:
+Freeze the human certificate and its working notes:
+
+```bash
+.venv/bin/bba epoch record-certificate \
+  --epoch-id EPOCH_ID \
+  --snapshot-id SNAPSHOT_ID \
+  --type human_reconstruction \
+  --issuer-id CERTIFICATE_ISSUER_ID \
+  --independence-basis "The issuer did not create this benchmark." \
+  --verification-method "Reconstructed all six selected answers from public material." \
+  --scope "Six controller-selected items." \
+  --answers certificate-answers.json \
+  --evidence working-notes.md=/protected/path/working-notes.md \
+  --evidence-root .bba
+```
+
+For a non-human certificate, omit `--answers` and supply one or more independent evidence files. For example:
+
+```bash
+.venv/bin/bba epoch record-certificate \
+  --epoch-id EPOCH_ID \
+  --snapshot-id SNAPSHOT_ID \
+  --type independent_reference \
+  --issuer-id REFERENCE_OWNER_ID \
+  --independence-basis "The reference implementation was developed independently." \
+  --verification-method "Compared every frozen answer with the reference implementation." \
+  --scope "All 30 frozen items." \
+  --evidence report.json=/protected/path/reference-report.json \
+  --evidence-root .bba
+```
+
+Save the seven adjudication findings as one JSON object:
 
 ```json
 {
@@ -298,7 +338,8 @@ Save the six construct-validity findings as one JSON object:
   "oracle_consistent": true,
   "scorer_consistent": true,
   "no_arbitrary_obscurity": true,
-  "useful_evaluation": true
+  "useful_evaluation": true,
+  "solvability_certificate_adequate": true
 }
 ```
 
@@ -312,7 +353,7 @@ Record the review:
   --epoch-id EPOCH_ID \
   --snapshot-id SNAPSHOT_ID \
   --reviewer-id REVIEWER_ID \
-  --answers reviewer-answers.json \
+  --solvability-certificate-digest CERTIFICATE_DIGEST \
   --findings reviewer-findings.json \
   --decision approved \
   --limitation "LIMITATION TEXT" \
@@ -322,7 +363,9 @@ Record the review:
   --evidence-root .bba
 ```
 
-An approval fails if one answer or one required finding is incorrect.
+The adjudicator must be different from the certificate issuer.
+An approval fails if one required finding is false.
+A human reconstruction certificate fails if one answer is incorrect.
 The command writes a signed epoch record and an append-only registry record.
 
 ## 13. Freeze the public audit population
@@ -397,6 +440,7 @@ epochs/
     validations/
     solver-cells/
     agent-traces/
+    solvability-certificates/
     promotions/
     evaluation/
     audit/
@@ -435,6 +479,6 @@ Use these controls:
 - Set model quotas before the epoch.
 - Check local agent traces after a small test epoch.
 - Estimate the full epoch from measured token use.
-- Keep three solver repetitions for a conforming version 6 epoch.
+- Keep three solver repetitions for a conforming version 7 epoch.
 
 Local storage, local CPU work, and local backup have no Vertex AI inference charge.

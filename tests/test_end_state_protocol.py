@@ -28,6 +28,8 @@ from bba.protocol import (
     ScoreSummary,
     SolverAttempt,
     SolverCell,
+    SolvabilityCertificate,
+    SolvabilityCertificateType,
     digest_json,
 )
 from bba.runtime import SandboxUnavailable, SecureSandbox
@@ -167,6 +169,34 @@ class TestEndStateProtocol(unittest.TestCase):
         self.assertEqual(SolverDebrief(items=(item,)).schema_version, 1)
         with self.assertRaises(ValueError):
             SolverDebrief(items=(item, item))
+
+    def test_solvability_certificate_contract_separates_human_and_machine_evidence(self):
+        common = {
+            "snapshot_id": "snapshot",
+            "design_digest": "a" * 64,
+            "instance_digest": "b" * 64,
+            "issuer_id": "independent-issuer",
+            "independence_basis": "The issuer did not create the benchmark.",
+            "verification_method": "Checked an independent reference implementation.",
+            "scope": "All frozen items.",
+            "evidence_digests": {"report.json": "c" * 64},
+            "timestamp": "2026-08-12T00:00:00+00:00",
+        }
+        certificate = SolvabilityCertificate(
+            certificate_type=SolvabilityCertificateType.INDEPENDENT_REFERENCE,
+            **common,
+        )
+        self.assertEqual(len(certificate.digest), 64)
+        with self.assertRaisesRegex(ValueError, "six items"):
+            SolvabilityCertificate(
+                certificate_type=SolvabilityCertificateType.HUMAN_RECONSTRUCTION,
+                **common,
+            )
+        with self.assertRaisesRegex(ValueError, "evidence"):
+            SolvabilityCertificate(
+                certificate_type=SolvabilityCertificateType.INDEPENDENT_REFERENCE,
+                **{**common, "evidence_digests": {}},
+            )
 
     def test_manifest_freeze_is_idempotent_and_conflicts_are_rejected(self):
         with tempfile.TemporaryDirectory() as temporary:

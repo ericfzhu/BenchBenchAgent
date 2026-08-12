@@ -28,6 +28,8 @@ from bba.protocol import (
     PromotionRecord,
     ReviewFindings,
     ScoreSummary,
+    SolvabilityCertificate,
+    SolvabilityCertificateType,
     SolverDebrief,
     SolverAttempt,
     SolverCell,
@@ -120,6 +122,7 @@ class TournamentController:
         self.cells: Dict[str, List[SolverCell]] = {}
         self.attempts: Dict[str, List[SolverAttempt]] = {}
         self.promotions: Dict[str, PromotionRecord] = {}
+        self.solvability_certificates: Dict[str, SolvabilityCertificate] = {}
         self._public_closed = False
         self._audit_public_scores: Optional[Dict[str, float]] = None
         self._audit_defect_pairs: tuple = ()
@@ -348,9 +351,41 @@ class TournamentController:
                 key=lambda item: (item.solver.artifact_id, item.repetition)
             )
 
+        for certificate in self.evidence.load_solvability_certificates(
+            self.manifest.epoch_id
+        ):
+            snapshot = snapshot_by_id.get(certificate.snapshot_id)
+            instance = self.instances.get(certificate.snapshot_id)
+            if (
+                snapshot is None
+                or instance is None
+                or snapshot.design_digest != certificate.design_digest
+                or instance.instance_digest != certificate.instance_digest
+            ):
+                raise ValueError(
+                    f"solvability certificate has no matching frozen candidate: {certificate.digest}"
+                )
+            self.solvability_certificates[certificate.digest] = certificate
+
         promotion_root = self.evidence.epoch_root(self.manifest.epoch_id) / "promotions"
         for path in sorted(promotion_root.glob("*.json")):
             record = promotion_record_from_mapping(read_json(path))
+            certificate = self.solvability_certificates.get(
+                record.solvability_certificate_digest
+            )
+            if certificate is None:
+                raise ValueError(
+                    f"promotion has no matching solvability certificate: {path.name}"
+                )
+            if (
+                record.design_digest != certificate.design_digest
+                or record.instance_digest != certificate.instance_digest
+                or record.evidence_digests.get("solvability_certificate")
+                != certificate.digest
+            ):
+                raise ValueError(
+                    f"promotion does not bind its solvability certificate: {path.name}"
+                )
             if record.decision == PromotionDecision.APPROVED:
                 existing = self.promotions.get(record.design_digest)
                 if existing is not None and existing != record:
@@ -421,6 +456,7 @@ class TournamentController:
                 "instances": len(self.instances),
                 "validations": len(self.validations),
                 "solver_cells": sum(len(items) for items in self.cells.values()),
+                "solvability_certificates": len(self.solvability_certificates),
                 "promotions": len(self.promotions),
                 "public_closed": self._public_closed,
                 "holdout_complete": self._holdout_record is not None,
@@ -1089,18 +1125,120 @@ class TournamentController:
         )
         self.state.set_phase(self.manifest.epoch_id, "awaiting_review")
 
-    def select_review_items(self, snapshot: CandidateSnapshot) -> List[str]:
+    def select_human_certificate_items(self, snapshot: CandidateSnapshot) -> List[str]:
         instance = self.instances[snapshot.snapshot_id]
         gold = read_jsonl_strict(Path(instance.instance_path) / "gold_private_sample.jsonl")
         ids = sorted(row["id"] for row in gold)
         generator = random.Random(int(instance.instance_digest[:16], 16))
-        return sorted(generator.sample(ids, self.manifest.thresholds.reviewer_sample_count))
+        return sorted(
+            generator.sample(
+                ids, self.manifest.thresholds.human_certificate_sample_count
+            )
+        )
+
+    def record_solvability_certificate(
+        self,
+        snapshot: CandidateSnapshot,
+        certificate_type: SolvabilityCertificateType,
+        issuer_id: str,
+        independence_basis: str,
+        verification_method: str,
+        scope: str,
+        evidence_files: Mapping[str, Path],
+        reconstructed_answers: Optional[Mapping[str, Any]] = None,
+    ) -> SolvabilityCertificate:
+        if not self._public_run_is_complete():
+            raise RuntimeError("solvability certification requires a complete public run")
+        if snapshot.round_index != self.manifest.thresholds.rounds - 1:
+            raise ValueError("solvability certification is limited to final-round snapshots")
+        instance = self.instances.get(snapshot.snapshot_id)
+        validation = self.validations.get(snapshot.snapshot_id)
+        if instance is None or validation is None or not validation.passed:
+            raise ValueError("solvability certification requires a valid frozen instance")
+        if issuer_id == snapshot.creator.artifact_id:
+            raise ValueError("a benchmark creator cannot issue its solvability certificate")
+        artifacts = {str(name): Path(path) for name, path in evidence_files.items()}
+        if not artifacts:
+            raise ValueError("solvability certification requires independent evidence files")
+        evidence_digests = {
+            name: file_digest(path) for name, path in artifacts.items()
+        }
+        sampled_item_ids: tuple[str, ...] = ()
+        answer_digest = None
+        if certificate_type == SolvabilityCertificateType.HUMAN_RECONSTRUCTION:
+            expected_ids = self.select_human_certificate_items(snapshot)
+            answers = dict(reconstructed_answers or {})
+            if set(answers) != set(expected_ids):
+                raise ValueError(
+                    "human certificate must reconstruct the controller-selected six-item sample"
+                )
+            gold = read_jsonl_strict(
+                Path(instance.instance_path) / "gold_private_sample.jsonl"
+            )
+            gold_map = {row["id"]: row["answer"] for row in gold}
+            if not all(
+                canonical_json(answers[item_id]) == canonical_json(gold_map[item_id])
+                for item_id in expected_ids
+            ):
+                raise ValueError("human certificate must reconstruct every sampled answer")
+            sampled_item_ids = tuple(expected_ids)
+            answer_digest = digest_json(answers)
+        elif reconstructed_answers:
+            raise ValueError("only a human reconstruction certificate accepts answers")
+        certificate = SolvabilityCertificate(
+            snapshot_id=snapshot.snapshot_id,
+            design_digest=snapshot.design_digest,
+            instance_digest=instance.instance_digest,
+            certificate_type=certificate_type,
+            issuer_id=issuer_id,
+            independence_basis=independence_basis,
+            verification_method=verification_method,
+            scope=scope,
+            evidence_digests=evidence_digests,
+            sampled_item_ids=sampled_item_ids,
+            answer_digest=answer_digest,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+        )
+        requested_fields = (
+            certificate.snapshot_id,
+            certificate.design_digest,
+            certificate.instance_digest,
+            certificate.certificate_type,
+            certificate.issuer_id,
+            certificate.independence_basis,
+            certificate.verification_method,
+            certificate.scope,
+            certificate.evidence_digests,
+            certificate.sampled_item_ids,
+            certificate.answer_digest,
+        )
+        for existing in self.solvability_certificates.values():
+            existing_fields = (
+                existing.snapshot_id,
+                existing.design_digest,
+                existing.instance_digest,
+                existing.certificate_type,
+                existing.issuer_id,
+                existing.independence_basis,
+                existing.verification_method,
+                existing.scope,
+                existing.evidence_digests,
+                existing.sampled_item_ids,
+                existing.answer_digest,
+            )
+            if existing_fields == requested_fields:
+                return existing
+        self.evidence.freeze_solvability_certificate(
+            self.manifest.epoch_id, certificate, artifacts
+        )
+        self.solvability_certificates[certificate.digest] = certificate
+        return certificate
 
     def record_human_review(
         self,
         snapshot: CandidateSnapshot,
         reviewer_id: str,
-        reconstructed_answers: Mapping[str, Any],
+        solvability_certificate_digest: str,
         decision: PromotionDecision,
         findings: ReviewFindings,
         limitations: Sequence[str],
@@ -1113,12 +1251,17 @@ class TournamentController:
             raise RuntimeError("human review requires a complete public run")
         if snapshot.round_index != self.manifest.thresholds.rounds - 1:
             raise ValueError("canonical review is limited to final-round snapshots")
-        expected_ids = self.select_review_items(snapshot)
-        if set(reconstructed_answers) != set(expected_ids):
-            raise ValueError("review must reconstruct the controller-selected six-item sample")
-        reconstructed_digest = hashlib.sha256(
-            canonical_json(dict(reconstructed_answers))
-        ).hexdigest()
+        certificate = self.solvability_certificates.get(
+            solvability_certificate_digest
+        )
+        if (
+            certificate is None
+            or certificate.snapshot_id != snapshot.snapshot_id
+            or certificate.design_digest != snapshot.design_digest
+        ):
+            raise ValueError("review requires a matching frozen solvability certificate")
+        if decision == PromotionDecision.APPROVED and reviewer_id == certificate.issuer_id:
+            raise ValueError("certificate issuer and approving reviewer must be different")
         registry = PromotionRegistry(self.evidence)
         registry.trust_key(key_id, public_key)
         instance = self.instances[snapshot.snapshot_id]
@@ -1129,7 +1272,7 @@ class TournamentController:
             requested_fields = (
                 reviewer_id,
                 decision,
-                reconstructed_digest,
+                solvability_certificate_digest,
                 findings,
                 tuple(limitations),
                 key_id,
@@ -1138,7 +1281,7 @@ class TournamentController:
             existing_fields = (
                 existing.reviewer_id,
                 existing.decision,
-                existing.reconstructed_answers_digest,
+                existing.solvability_certificate_digest,
                 existing.findings,
                 existing.limitations,
                 existing.key_id,
@@ -1146,7 +1289,6 @@ class TournamentController:
             )
             if (
                 requested_fields != existing_fields
-                or existing.sampled_item_ids != tuple(expected_ids)
             ):
                 raise ValueError("a different review already exists for this candidate")
             self.evidence.publish_record_idempotent(
@@ -1161,14 +1303,6 @@ class TournamentController:
             target_registry.append(existing)
             self.promotions[snapshot.design_digest] = existing
             return existing
-        gold = read_jsonl_strict(Path(instance.instance_path) / "gold_private_sample.jsonl")
-        gold_map = {row["id"]: row["answer"] for row in gold}
-        all_correct = all(
-            canonical_json(reconstructed_answers[item_id]) == canonical_json(gold_map[item_id])
-            for item_id in expected_ids
-        )
-        if decision == PromotionDecision.APPROVED and not all_correct:
-            raise ValueError("an approved review must reconstruct every sampled answer")
         validation = self.validations.get(snapshot.snapshot_id)
         cells = self.cells.get(snapshot.snapshot_id, ())
         expected_cell_count = (
@@ -1231,6 +1365,7 @@ class TournamentController:
         evidence_digests = {
             "validation": file_digest(validation_path),
             "instance": file_digest(instance_path),
+            "solvability_certificate": solvability_certificate_digest,
         }
         evidence_digests.update({f"cell_{index}": file_digest(path) for index, path in enumerate(cell_paths)})
         record = PromotionRecord(
@@ -1238,8 +1373,7 @@ class TournamentController:
             instance_digest=instance.instance_digest,
             reviewer_id=reviewer_id,
             decision=decision,
-            sampled_item_ids=tuple(expected_ids),
-            reconstructed_answers_digest=reconstructed_digest,
+            solvability_certificate_digest=solvability_certificate_digest,
             findings=findings,
             evidence_digests=evidence_digests,
             limitations=tuple(limitations),

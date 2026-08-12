@@ -7,8 +7,8 @@ Do not mark an item complete without the named evidence file.
 
 | Field | Value |
 | --- | --- |
-| BBA version | `0.10.0` |
-| Protocol | `bba.epoch.v6` |
+| BBA version | `0.11.0` |
+| Protocol | `bba.epoch.v7` |
 | Git commit | Not run |
 | Epoch ID | Not run |
 | Google Cloud project | Not run |
@@ -52,9 +52,11 @@ Status: `Not run`
 
 Required evidence:
 
-- One independent reviewer identity for each reviewed candidate
-- Six reconstructed answers
-- Six structured construct-validity findings
+- One independent solvability certificate for each reviewed candidate
+- A certificate type, issuer, independence basis, method, scope, and evidence digests
+- Six correct reconstructed answers only when human reconstruction is the selected certificate type
+- One separate human adjudicator identity for each reviewed candidate
+- Seven structured findings, including certificate adequacy
 - An Ed25519 signature that verifies with the trusted public key
 - A different reviewer and key for each escalated second review
 - No canonical record before public closure

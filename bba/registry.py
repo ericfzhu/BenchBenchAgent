@@ -97,11 +97,11 @@ class PromotionRegistry:
     def append(self, record: PromotionRecord) -> Path:
         if not self.verify(record):
             raise ValueError("promotion signature is invalid")
-        if record.decision == PromotionDecision.APPROVED and len(record.sampled_item_ids) != 6:
-            raise ValueError("approved promotions require six independently reconstructed items")
-        if len(set(record.sampled_item_ids)) != len(record.sampled_item_ids):
-            raise ValueError("review samples must be unique")
-        if not record.reviewer_id or not record.key_id or not record.reconstructed_answers_digest:
+        if (
+            not record.reviewer_id
+            or not record.key_id
+            or not record.solvability_certificate_digest
+        ):
             raise ValueError("promotion attestation is incomplete")
         with local_file_lock(self.evidence.root, f"registry-{self.registry_name}"):
             existing = self.find_exact(record)

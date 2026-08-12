@@ -1,6 +1,6 @@
 # BBA protocol specification
 
-This document gives the normative rules for BBA protocol version `bba.epoch.v6`.
+This document gives the normative rules for BBA protocol version `bba.epoch.v7`.
 The word `must` identifies a required rule.
 
 ## 1. Purpose
@@ -32,7 +32,7 @@ BBA also publishes creator ranks, solver ranks, candidate status, and immutable 
 
 **Cell** means one solver run against one candidate.
 
-**Canonical benchmark** means a candidate that has an approved and signed human review.
+**Canonical benchmark** means a candidate that has an independent solvability certificate and an approved, signed human adjudication.
 
 **Public evaluator** means the frozen rules that validate, classify, and rank public candidates.
 
@@ -366,29 +366,35 @@ BBA ranks solvers by equal-weight macro-average accuracy across active canonical
 BBA must calculate item-level bootstrap confidence intervals.
 BBA must not compare aggregate ranks from different benchmark sets without a bridging study.
 
-## 12. Human review and promotion
+## 12. Solvability certification and promotion
 
 Mechanical success does not make a benchmark canonical.
-An independent human reviewer must approve the benchmark.
+Independent evidence must certify that the benchmark is well-defined and solvable.
+The certificate can use human reconstruction, an independent reference implementation, a machine-verifiable witness, a trusted external source, or an independent solver outside the evaluated cohort.
+The creator cannot issue the certificate.
+The certificate must bind the candidate, frozen instance, method, scope, issuer, independence basis, and evidence digests.
+Human reconstruction is one certificate type, not a universal requirement.
+For that type, the controller selects six of the 30 items and checks all six answers against frozen gold.
 
-The reviewer must check these properties:
+A separate human adjudicator must approve the benchmark and the certificate.
+The approving adjudicator cannot be the certificate issuer.
+
+The adjudicator must check these properties:
 
 - The package measures the named capability.
 - A person can solve it from the public material.
 - The oracle and scorer are consistent.
 - The package does not depend on arbitrary obscurity.
 - The package is useful as an evaluation.
+- The solvability certificate is adequate for the claimed capability and stated scope.
 
-The controller selects six of the 30 items after the package freeze.
-The reviewer must reconstruct all six answers from public material.
-An approval must fail if one reconstructed answer is incorrect.
 An approval must require passed mechanical validation.
 It must require a complete successful solver panel and an eligible final-round status.
 Each construct-validity finding must pass.
 If a reviewer finds a discrepancy, the decision must be `escalated`.
 A second decision must use a different reviewer and a different key.
 
-The promotion record must contain the reviewer ID, candidate digest, evidence digests, decision, limitations, time, key ID, and signature.
+The promotion record must contain the adjudicator ID, certificate digest, candidate digest, evidence digests, decision, limitations, time, key ID, and signature.
 The signature must use Ed25519.
 The reviewer trust registry must contain the public key.
 Evidence must not contain the reviewer private key.

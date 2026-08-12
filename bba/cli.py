@@ -19,6 +19,7 @@ from bba.holdouts import HoldoutRegistry
 from bba.protocol import (
     PromotionDecision,
     ReviewFindings,
+    SolvabilityCertificateType,
     to_primitive,
 )
 from bba.preflight import run_preflight
@@ -98,6 +99,9 @@ def _saved_status(
         ),
         "validations": len(list((root / "validations").glob("*.json"))),
         "solver_cells": len(list((root / "solver-cells").glob("*.json"))),
+        "solvability_certificates": len(
+            list((root / "solvability-certificates").glob("*/certificate.json"))
+        ),
         "promotions": len(list((root / "promotions").glob("*.json"))),
         "public_closed": (root / "evaluation" / "public.json").is_file(),
         "holdout_complete": (root / "audit" / "holdout.json").is_file(),
@@ -210,15 +214,49 @@ def _epoch_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def _epoch_review_items(args: argparse.Namespace) -> int:
+def _epoch_certificate_items(args: argparse.Namespace) -> int:
     evidence = _evidence(args)
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
         controller = _load_controller(evidence, args.epoch_id, _state(evidence))
         snapshot = controller.snapshot_by_id(args.snapshot_id)
         _print_json({
             "snapshot_id": snapshot.snapshot_id,
-            "item_ids": controller.select_review_items(snapshot),
+            "item_ids": controller.select_human_certificate_items(snapshot),
         })
+    return 0
+
+
+def _parse_evidence_files(values: Sequence[str]) -> dict[str, Path]:
+    result = {}
+    for value in values:
+        name, separator, path = value.partition("=")
+        if not separator or not name or not path or name in result:
+            raise ValueError("each evidence value must be a unique NAME=PATH")
+        result[name] = Path(path)
+    return result
+
+
+def _epoch_record_certificate(args: argparse.Namespace) -> int:
+    evidence = _evidence(args)
+    answers = None
+    if args.answers:
+        answers = read_json(Path(args.answers))
+        if not isinstance(answers, dict):
+            raise ValueError("certificate answers must be one JSON object keyed by item ID")
+    with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
+        controller = _load_controller(evidence, args.epoch_id, _state(evidence))
+        snapshot = controller.snapshot_by_id(args.snapshot_id)
+        certificate = controller.record_solvability_certificate(
+            snapshot,
+            SolvabilityCertificateType(args.type),
+            args.issuer_id,
+            args.independence_basis,
+            args.verification_method,
+            args.scope,
+            _parse_evidence_files(args.evidence),
+            answers,
+        )
+        _print_json(certificate)
     return 0
 
 
@@ -245,6 +283,10 @@ def _epoch_candidates(args: argparse.Namespace) -> int:
                     else None
                 ),
                 "reviewed": snapshot.design_digest in controller.promotions,
+                "solvability_certificates": sum(
+                    certificate.snapshot_id == snapshot.snapshot_id
+                    for certificate in controller.solvability_certificates.values()
+                ),
             }
             for snapshot in controller.snapshots
         ])
@@ -253,9 +295,6 @@ def _epoch_candidates(args: argparse.Namespace) -> int:
 
 def _epoch_record_review(args: argparse.Namespace) -> int:
     evidence = _evidence(args)
-    answers = read_json(Path(args.answers))
-    if not isinstance(answers, dict):
-        raise ValueError("review answers must be one JSON object keyed by item ID")
     signing_key = Path(args.signing_key_file).read_bytes().strip()
     public_key = Path(args.public_key_file).read_bytes().strip()
     findings_value = read_json(Path(args.findings))
@@ -267,7 +306,7 @@ def _epoch_record_review(args: argparse.Namespace) -> int:
         record = controller.record_human_review(
             snapshot,
             args.reviewer_id,
-            answers,
+            args.solvability_certificate_digest,
             PromotionDecision(args.decision),
             ReviewFindings(**findings_value),
             args.limitation,
@@ -376,12 +415,35 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
     _add_epoch_id(candidates)
     candidates.set_defaults(handler=_epoch_candidates)
 
-    review_items = epoch_commands.add_parser(
-        "review-items", help="select the fixed six-item human review sample"
+    certificate_items = epoch_commands.add_parser(
+        "certificate-items", help="select six items for a human solvability certificate"
     )
-    _add_epoch_id(review_items)
-    review_items.add_argument("--snapshot-id", required=True)
-    review_items.set_defaults(handler=_epoch_review_items)
+    _add_epoch_id(certificate_items)
+    certificate_items.add_argument("--snapshot-id", required=True)
+    certificate_items.set_defaults(handler=_epoch_certificate_items)
+
+    certificate = epoch_commands.add_parser(
+        "record-certificate", help="freeze independent solvability evidence"
+    )
+    _add_epoch_id(certificate)
+    certificate.add_argument("--snapshot-id", required=True)
+    certificate.add_argument(
+        "--type",
+        required=True,
+        choices=[item.value for item in SolvabilityCertificateType],
+    )
+    certificate.add_argument("--issuer-id", required=True)
+    certificate.add_argument("--independence-basis", required=True)
+    certificate.add_argument("--verification-method", required=True)
+    certificate.add_argument("--scope", required=True)
+    certificate.add_argument(
+        "--evidence",
+        action="append",
+        default=[],
+        metavar="NAME=PATH",
+    )
+    certificate.add_argument("--answers")
+    certificate.set_defaults(handler=_epoch_record_certificate)
 
     review = epoch_commands.add_parser(
         "record-review", help="sign and save a human promotion decision"
@@ -389,7 +451,7 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
     _add_epoch_id(review)
     review.add_argument("--snapshot-id", required=True)
     review.add_argument("--reviewer-id", required=True)
-    review.add_argument("--answers", required=True)
+    review.add_argument("--solvability-certificate-digest", required=True)
     review.add_argument("--findings", required=True)
     review.add_argument(
         "--decision",

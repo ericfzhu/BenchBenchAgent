@@ -6,23 +6,26 @@ import dataclasses
 import hashlib
 import json
 import os
+import re
 import shutil
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 from bba.protocol import (
     CandidateSnapshot,
     EvaluationInstance,
     ExperimentManifest,
     ModelIdentity,
+    SolvabilityCertificate,
     SolverAttempt,
     candidate_snapshot_from_mapping,
     canonical_json,
     experiment_manifest_from_mapping,
     evaluation_instance_from_mapping,
     solver_attempt_from_mapping,
+    solvability_certificate_from_mapping,
     to_primitive,
 )
 
@@ -200,6 +203,69 @@ class EvidenceStore:
                     raise ValueError(f"solver attempt artifact digest is invalid: {attempt.attempt_id}/{name}")
             attempts.append(attempt)
         return attempts
+
+    def load_solvability_certificates(
+        self, epoch_id: str
+    ) -> list[SolvabilityCertificate]:
+        root = self.epoch_root(epoch_id) / "solvability-certificates"
+        certificates = []
+        for metadata_path in sorted(root.glob("*/certificate.json")):
+            if metadata_path.parent.name.startswith("."):
+                continue
+            certificate = solvability_certificate_from_mapping(
+                read_json(metadata_path)
+            )
+            if metadata_path.parent.name != certificate.digest:
+                raise ValueError(
+                    f"solvability certificate path has the wrong digest: {metadata_path}"
+                )
+            artifact_root = metadata_path.parent / "artifacts"
+            for name, expected_digest in certificate.evidence_digests.items():
+                artifact = artifact_root / name
+                if not artifact.is_file() or file_digest(artifact) != expected_digest:
+                    raise ValueError(
+                        f"solvability certificate evidence is invalid: {certificate.digest}/{name}"
+                    )
+            certificates.append(certificate)
+        return certificates
+
+    def freeze_solvability_certificate(
+        self,
+        epoch_id: str,
+        certificate: SolvabilityCertificate,
+        artifacts: Mapping[str, Path],
+    ) -> Path:
+        if set(artifacts) != set(certificate.evidence_digests):
+            raise ValueError("solvability certificate artifacts do not match its evidence")
+        root = self.epoch_root(epoch_id) / "solvability-certificates"
+        final_root = root / certificate.digest
+        metadata_path = final_root / "certificate.json"
+        if final_root.exists():
+            existing = solvability_certificate_from_mapping(read_json(metadata_path))
+            if canonical_json(existing) != canonical_json(certificate):
+                raise FileExistsError("solvability certificate conflicts with evidence")
+            self.load_solvability_certificates(epoch_id)
+            return metadata_path
+        root.mkdir(parents=True, exist_ok=True)
+        temporary_root = Path(
+            tempfile.mkdtemp(prefix=".solvability-certificate-", dir=str(root))
+        )
+        try:
+            artifact_root = temporary_root / "artifacts"
+            for name, source_value in artifacts.items():
+                if not re.fullmatch(r"[a-zA-Z0-9._-]+", name):
+                    raise ValueError("solvability evidence names must be filesystem safe")
+                source = Path(source_value).resolve()
+                if not source.is_file() or file_digest(source) != certificate.evidence_digests[name]:
+                    raise ValueError(f"solvability evidence changed before freeze: {name}")
+                artifact_root.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, artifact_root / name)
+            atomic_publish_json(temporary_root / "certificate.json", certificate)
+            os.rename(temporary_root, final_root)
+            return metadata_path
+        finally:
+            if temporary_root.exists():
+                shutil.rmtree(temporary_root)
 
     def freeze_solver_attempt(
         self,

@@ -13,6 +13,8 @@ from bba.protocol import (
     ModelIdentity,
     PromotionDecision,
     ReviewFindings,
+    SolvabilityCertificate,
+    SolvabilityCertificateType,
     SolverAttempt,
 )
 from bba.audit import audit_evaluator
@@ -32,6 +34,8 @@ __all__ = [
     "ModelIdentity",
     "PromotionDecision",
     "ReviewFindings",
+    "SolvabilityCertificate",
+    "SolvabilityCertificateType",
     "SolverAttempt",
     "TournamentController",
     "AdkCreatorBackend",

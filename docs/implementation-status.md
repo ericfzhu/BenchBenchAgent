@@ -1,7 +1,7 @@
 # BBA implementation status
 
 This document records the implementation and verification state.
-It applies to BBA version `0.10.0` and protocol `bba.epoch.v6`.
+It applies to BBA version `0.11.0` and protocol `bba.epoch.v7`.
 The [protocol specification](protocol.md) is the normative source.
 The [completion plan](implementation-plan.md) gives the work order and acceptance gates.
 
@@ -22,7 +22,7 @@ The [completion plan](implementation-plan.md) gives the work order and acceptanc
 | 3. Complete solver evidence | `Implemented` | Each success preserves locked predictions, a structured item debrief, two scorer reports, command diagnostics, file digests, and item results. Later creator rounds receive bounded correctness-annotated public debrief feedback. `bba evidence replay-cell` verifies the debrief and replays a score without inference. |
 | 4. Retry rules | `Implemented` | The protocol retries only timeout and provider error. It permits three immutable attempts and selects the first success. Fault-injection tests cover two failures followed by success. |
 | 5. Incomplete-panel ranking | `Implemented` | An incomplete or invalid row stays in the matrix and has `rank: null`. It does not enter solver aggregates. |
-| 6. Human promotion gate | `Implemented` | Approval checks mechanical validity, panel completeness, final-round eligibility, six answers, six structured findings, and escalation rules. Records use Ed25519. The trust registry stores public keys only. |
+| 6. Human promotion gate | `Implemented` | Promotion requires a typed, digest-bound independent solvability certificate and a separate human adjudicator. Human six-item reconstruction is one certificate type. Other types use independent evidence. Approval checks certificate adequacy, mechanical validity, panel completeness, final-round eligibility, construct validity, and escalation rules. Records use Ed25519. |
 | 7. Dependency isolation | `Implemented` | BBA accepts standard-library packages or exact hashed wheels from the local catalog. Installation uses local wheels with no dependency resolution. Validation stores environment digests. |
 | 8. Sandbox conformance | `Partial` | Ubuntu uses Bubblewrap namespaces. macOS uses Seatbelt. Both backends deny network and unrelated host paths. They use temporary home and temporary directories. CPU, memory, process, file, and wall limits fail closed. The same security suite tests both backends. The Ubuntu CI job must pass before this item can be `Implemented`. |
 | 9. Evaluator version binding | `Implemented` | The manifest stores a root digest and component digests for bound source, prompts, protocol, catalog, runtime, and installed controller packages. |
