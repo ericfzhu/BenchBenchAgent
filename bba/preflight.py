@@ -11,8 +11,16 @@ from bba.evidence import EvidenceStore
 from bba.observability import LocalObservabilityStore
 from bba.protocol import ExperimentManifest, to_primitive
 from bba.runtime import SecureSandbox
+from bba.tracing import trace_span, traced
 
 
+@traced(
+    "bba.epoch.preflight",
+    lambda manifest, evidence, solver_backends=None: {
+        "bba.epoch.id": manifest.epoch_id,
+        "bba.model.count": len(manifest.cohort),
+    },
+)
 def run_preflight(
     manifest: ExperimentManifest,
     evidence: EvidenceStore,
@@ -40,7 +48,12 @@ def run_preflight(
                 "Return the answer value for the one declared item.", encoding="utf-8"
             )
             items = ({"id": "preflight-item", "answer_hint": 1},)
-            predictions = backend.solve(identity, bundle, items, 0, manifest)
+            with trace_span("bba.preflight.model", {
+                "bba.epoch.id": manifest.epoch_id,
+                "bba.model.identity": identity.artifact_id,
+                "bba.model.publisher": identity.publisher,
+            }):
+                predictions = backend.solve(identity, bundle, items, 0, manifest)
             debrief = backend.take_debrief()
             trace = backend.take_trace()
         if predictions != [{"id": "preflight-item", "answer": 1}]:

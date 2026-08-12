@@ -291,6 +291,7 @@ def create_app(console: OperatorConsole) -> FastAPI:
         except Exception as exc:
             return fail("Could not read agent activity", str(exc), 404)
         totals = value["totals"]
+        tracing = value.get("tracing", {})
         model_rows = "".join(
             f'<tr><td>{_e(row["identity"])}</td><td class="num">{row["invocations"]}</td><td class="num">{row["failures"]}</td><td class="num">{row["model_calls"]}</td><td class="num">{row["tool_calls"]}</td><td class="num">{row["total_tokens"]}</td><td class="num">{row["duration_ms"]:.0f} ms</td></tr>'
             for row in value["models"]
@@ -299,7 +300,12 @@ def create_app(console: OperatorConsole) -> FastAPI:
             f'<tr><td>{_chip(row["status"])}</td><td>{_e(row["role"] or "—")}</td><td>{_e(row["identity"])}</td><td class="num">{row["model_calls"]}</td><td class="num">{row["tool_calls"]}</td><td class="num">{row["total_tokens"]}</td><td class="num">{row["duration_ms"]:.0f} ms</td><td>{_e(row["error_type"] or "—")}</td></tr>'
             for row in value["recent"]
         ) or '<tr><td class="empty" colspan="8">No ADK invocation has started.</td></tr>'
-        body = f"""<div class="breadcrumb"><a href="{_epoch_link(epoch_id)}">{_e(epoch_id)}</a> / Agent activity</div><div class="page-head"><div><div class="eyebrow">Google ADK observability</div><h1>Agent activity</h1><p class="subtitle">BBA records ADK lifecycle, usage, latency, and error metadata. It does not record prompts, tool arguments, tool results, model output, or hidden audit content.</p></div>{_chip('running' if value['active'] else 'observed')}</div>
+        trace_notice = (
+            f'<div class="notice"><strong>Local OTLP export is on.</strong> Traces go to {_e(tracing.get("endpoint"))}. Content capture is off.</div>'
+            if tracing.get("enabled")
+            else f'<div class="notice warn"><strong>Local OTLP export is off.</strong> {_e(tracing.get("reason", "No endpoint is configured."))}</div>'
+        )
+        body = f"""<div class="breadcrumb"><a href="{_epoch_link(epoch_id)}">{_e(epoch_id)}</a> / Agent activity</div><div class="page-head"><div><div class="eyebrow">Google ADK observability</div><h1>Agent activity</h1><p class="subtitle">BBA records ADK lifecycle, usage, latency, and error metadata. It does not record prompts, tool arguments, tool results, model output, or hidden audit content.</p></div>{_chip('running' if value['active'] else 'observed')}</div>{trace_notice}
 <div class="grid"><section class="card span-4"><div class="metric-label">Invocations</div><div class="metric">{totals['invocations']}</div></section><section class="card span-4"><div class="metric-label">Model calls</div><div class="metric">{totals['model_calls']}</div></section><section class="card span-4"><div class="metric-label">Total tokens</div><div class="metric">{totals['total_tokens']}</div></section></div>
 <section class="section"><div class="section-head"><h2>Models</h2><span class="muted">Cumulative values for this epoch</span></div><div class="table-wrap"><table><thead><tr><th>Identity</th><th class="num">Runs</th><th class="num">Failures</th><th class="num">Model calls</th><th class="num">Tool calls</th><th class="num">Tokens</th><th class="num">Time</th></tr></thead><tbody>{model_rows}</tbody></table></div></section>
 <section class="section"><div class="section-head"><h2>Recent ADK invocations</h2><span class="muted">Refresh this page to read the latest local records.</span></div><div class="table-wrap"><table><thead><tr><th>Status</th><th>Role</th><th>Identity</th><th class="num">Model calls</th><th class="num">Tools</th><th class="num">Tokens</th><th class="num">Time</th><th>Error type</th></tr></thead><tbody>{recent_rows}</tbody></table></div></section>"""

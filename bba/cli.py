@@ -29,6 +29,7 @@ from bba.replay import replay_solver_attempt
 from bba.runtime import SecureSandbox
 from bba.state import LocalStateStore, local_file_lock
 from bba.tournament import TournamentController
+from bba.tracing import configure_tracing, tracing_status
 from bba.validator import PackageValidator
 
 
@@ -114,6 +115,7 @@ def _saved_status(
         "public_closed": (root / "evaluation" / "public.json").is_file(),
         "holdout_complete": (root / "audit" / "holdout.json").is_file(),
         "observability": LocalObservabilityStore(evidence.root).summary(epoch_id),
+        "tracing": tracing_status(),
     })
     return result
 
@@ -233,6 +235,7 @@ def _epoch_observability(args: argparse.Namespace) -> int:
         LocalObservabilityStore(evidence.root).summary(
             args.epoch_id, recent_limit=args.recent
         )
+        | {"tracing": tracing_status()}
     )
     return 0
 
@@ -574,6 +577,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    configure_tracing()
     try:
         return int(args.handler(args))
     except Exception as exc:

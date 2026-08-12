@@ -44,6 +44,7 @@ from bba.protocol import (
     to_primitive,
 )
 from bba.runtime import SecureSandbox
+from bba.tracing import trace_span
 
 
 ADK_VERSION = google.adk.__version__
@@ -412,7 +413,14 @@ async def _run_agent(
 
     caught: Optional[BaseException] = None
     try:
-        await asyncio.wait_for(consume_events(), timeout=timeout_seconds)
+        with trace_span("bba.adk.invocation", {
+            "bba.epoch.id": epoch_id,
+            "bba.role": role,
+            "bba.model.identity": identity.artifact_id,
+            "bba.model.publisher": identity.publisher,
+            "bba.adk.version": ADK_VERSION,
+        }):
+            await asyncio.wait_for(consume_events(), timeout=timeout_seconds)
     except asyncio.TimeoutError as exc:
         caught = exc
         status = "timeout"

@@ -25,6 +25,7 @@ from bba.protocol import (
     to_primitive,
 )
 from bba.tournament import SolverBackend, TournamentController
+from bba.tracing import traced
 from bba.validator import PackageValidator
 
 
@@ -113,6 +114,14 @@ class SealedAuditRunner:
             raise ValueError("hidden solver configurations must be distinct from the public panel")
         return identities
 
+    @traced(
+        "bba.audit.hidden_instance",
+        lambda self, snapshot, seed: {
+            "bba.epoch.id": self.controller.manifest.epoch_id,
+            "bba.snapshot.id": snapshot.snapshot_id,
+            "bba.audit.seed": seed,
+        },
+    )
     def _freeze_hidden_instance(self, snapshot, seed: int) -> EvaluationInstance:
         profile_id = f"{snapshot.snapshot_id}--seed-{seed}"
         root = (
@@ -165,6 +174,15 @@ class SealedAuditRunner:
             temporary_root.rename(root)
             return instance
 
+    @traced(
+        "bba.audit.hidden_cell",
+        lambda self, snapshot, instance, solver, seed_index: {
+            "bba.epoch.id": self.controller.manifest.epoch_id,
+            "bba.snapshot.id": snapshot.snapshot_id,
+            "bba.solver.identity": solver.artifact_id,
+            "bba.audit.seed_index": seed_index,
+        },
+    )
     def _run_hidden_cell(
         self,
         snapshot,
@@ -225,6 +243,13 @@ class SealedAuditRunner:
             else:
                 self.controller.solver_backends[solver.artifact_id] = original_backend
 
+    @traced(
+        "bba.audit.damage_checks",
+        lambda self, snapshot, instance: {
+            "bba.epoch.id": self.controller.manifest.epoch_id,
+            "bba.snapshot.id": snapshot.snapshot_id,
+        },
+    )
     def _damage_checks(self, snapshot, instance: EvaluationInstance) -> Dict[str, bool]:
         with tempfile.TemporaryDirectory(prefix="bba-audit-damage-") as temporary:
             root = Path(temporary)
@@ -265,6 +290,13 @@ class SealedAuditRunner:
                     checks[name] = True
             return checks
 
+    @traced(
+        "bba.audit.sealed",
+        lambda self: {
+            "bba.epoch.id": self.controller.manifest.epoch_id,
+            "bba.protocol.version": self.controller.manifest.protocol_version,
+        },
+    )
     def run(self) -> Dict[str, Any]:
         if self.controller._holdout_record is not None:
             registry = HoldoutRegistry(self.evidence)

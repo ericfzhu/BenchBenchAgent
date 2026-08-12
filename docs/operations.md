@@ -544,6 +544,31 @@ or hidden audit content.
 If the local controller stops during an invocation, the next preflight, public
 run, or audit marks the stale activity record as `interrupted`.
 
+### Optional OpenTelemetry trace view
+
+BBA and Google ADK can send nested activity traces to a local OpenTelemetry
+Collector. Trace export is off by default. The local JSON observability records
+continue to work when trace export is off.
+
+Start an OTLP HTTP receiver on the local host. Then set this variable before
+you start the CLI or console:
+
+```bash
+export BBA_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318
+```
+
+BBA adds `/v1/traces` when the endpoint has no path. BBA accepts only
+`localhost`, `127.0.0.1`, or `::1`. Do not put credentials in this value.
+
+The export filter permits operation names, BBA identifiers, model identities,
+tool names, counts, token use, finish reasons, elapsed times, and error types.
+It does not export ADK session or invocation IDs.
+It removes prompts, responses, tool arguments, tool results, descriptions,
+exception messages, stack traces, events, and links.
+
+An unavailable collector does not stop an epoch. OpenTelemetry data can be
+lost or sampled. Do not use it as epoch evidence or recovery state.
+
 ## 19. Failure response
 
 Use these rules after a failure:

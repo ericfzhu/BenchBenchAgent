@@ -35,6 +35,7 @@ The [completion plan](implementation-plan.md) gives the work order and acceptanc
 | 16. Continuous integration | `Removed` | BBA does not use GitHub Actions. Run tests, package checks, sandbox checks, and paid Vertex preflight from the local operator host. |
 | 17. Local operator console | `Implemented` | `bba web` binds to IPv4 loopback. It uses the existing CLI and controller contracts. It can queue epoch operations, record certificates and signed reviews, and show both rankings, the score matrix, and the audit vector. Host, origin, form-token, and confirmation checks protect local changes. |
 | 18. ADK observability | `Implemented` | A Google ADK plugin records redacted lifecycle, token-use, tool-use, latency, model-version, and error metadata. ADK message-content capture is off. The CLI and localhost console show local epoch summaries. Privacy, success, and failure tests use deterministic ADK models. |
+| 19. OpenTelemetry tracing | `Implemented` | BBA adds controller spans to native ADK spans and preserves context in parallel solver workers. Optional OTLP HTTP export accepts only a loopback endpoint. An export allowlist removes content, descriptions, events, links, and exception text. Export is off by default and cannot stop an epoch. |
 
 ## Local verification
 

@@ -244,6 +244,21 @@ Show the current summary:
 
 The localhost console also shows an **Agent activity** page for each epoch.
 
+### Optional OpenTelemetry traces
+
+BBA and Google ADK can send privacy-filtered traces to an OpenTelemetry
+Collector on the local host. Trace export is off by default.
+
+Set the local OTLP HTTP endpoint before you start BBA:
+
+```bash
+export BBA_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318
+```
+
+BBA adds `/v1/traces` when the endpoint has no path. BBA rejects a remote
+endpoint. The collector can be absent or unavailable without stopping an epoch.
+Trace export does not replace local evidence, restart state, or ranking data.
+
 ## Documents
 
 - [Protocol specification](docs/protocol.md): Required rules for one epoch.

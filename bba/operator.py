@@ -27,6 +27,7 @@ from bba.protocol import (
 from bba.scoring import classify_candidate
 from bba.state import LocalStateStore, local_file_lock
 from bba.tournament import TournamentController
+from bba.tracing import tracing_status
 
 
 def _now() -> str:
@@ -161,6 +162,7 @@ class OperatorConsole:
             "public_closed": (root / "evaluation" / "public.json").is_file(),
             "holdout_complete": (root / "audit" / "holdout.json").is_file(),
             "observability": self.observability_store.summary(epoch_id),
+            "tracing": tracing_status(),
         })
         return result
 
@@ -277,7 +279,9 @@ class OperatorConsole:
     def observability(self, epoch_id: str) -> dict[str, Any]:
         epoch_id = self.validate_epoch_id(epoch_id)
         self.evidence.load_manifest(epoch_id)
-        return self.observability_store.summary(epoch_id)
+        return self.observability_store.summary(epoch_id) | {
+            "tracing": tracing_status()
+        }
 
     def _run_cli(self, arguments: Sequence[str]) -> str:
         with tempfile.TemporaryFile() as output:

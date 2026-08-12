@@ -170,6 +170,11 @@ class FakeConsole:
                 "duration_ms": 1500.0,
                 "error_type": None,
             }],
+            "tracing": {
+                "enabled": True,
+                "endpoint": "http://127.0.0.1:4318/v1/traces",
+                "content_captured": False,
+            },
         }
 
 
@@ -209,6 +214,7 @@ class TestWebConsole(unittest.TestCase):
         self.assertEqual(activity.status_code, 200)
         self.assertIn("Google ADK observability", activity.text)
         self.assertIn("Recent ADK invocations", activity.text)
+        self.assertIn("Local OTLP export is on", activity.text)
         self.assertIn("123", activity.text)
 
     def test_post_requires_csrf_confirmation_and_same_origin(self):

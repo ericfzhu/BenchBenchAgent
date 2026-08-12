@@ -45,6 +45,7 @@ from bba.registry import PromotionRegistry
 from bba.scoring import CandidateEvaluation, classify_candidate, matrix, rank_creators, rank_solvers
 from bba.scheduler import BoundedScheduler
 from bba.state import LocalStateStore
+from bba.tracing import trace_span, traced
 from bba.validator import PackageValidator, read_jsonl_strict, validate_answer_rows, validate_item_rows, write_jsonl
 
 
@@ -527,6 +528,16 @@ class TournamentController:
             }.items()
         }
 
+    @traced(
+        "bba.solver.attempt",
+        lambda self, snapshot, solver, repetition, attempt_index: {
+            "bba.epoch.id": self.manifest.epoch_id,
+            "bba.snapshot.id": snapshot.snapshot_id,
+            "bba.solver.identity": solver.artifact_id,
+            "bba.solver.repetition": repetition,
+            "bba.solver.attempt": attempt_index,
+        },
+    )
     def _run_solver_attempt(
         self,
         snapshot: CandidateSnapshot,
@@ -608,43 +619,58 @@ class TournamentController:
                 shutil.copy2(instance_root / "gold_private_sample.jsonl", score_package)
                 shutil.copy2(prediction_path, score_package / "predictions.jsonl")
                 score_output = score_package / ".controller_solver_score.json"
-                result = self.validator.run_package_python(
-                    score_package,
-                    score_workspace,
-                    score_package / "scorer.py",
-                    [
-                        "--gold", "gold_private_sample.jsonl",
-                        "--predictions", "predictions.jsonl",
-                        "--out", score_output.name,
-                    ],
-                    cwd=score_package,
-                    timeout_seconds=self.manifest.budget.solver_seconds,
-                )
+                with trace_span("bba.solver.candidate_scorer", {
+                    "bba.epoch.id": self.manifest.epoch_id,
+                    "bba.snapshot.id": snapshot.snapshot_id,
+                    "bba.solver.identity": solver.artifact_id,
+                }):
+                    result = self.validator.run_package_python(
+                        score_package,
+                        score_workspace,
+                        score_package / "scorer.py",
+                        [
+                            "--gold", "gold_private_sample.jsonl",
+                            "--predictions", "predictions.jsonl",
+                            "--out", score_output.name,
+                        ],
+                        cwd=score_package,
+                        timeout_seconds=self.manifest.budget.solver_seconds,
+                    )
                 if result.returncode != 0 or not score_output.is_file():
                     raise RuntimeError(result.stderr[-1000:] or "creator scorer did not publish a report")
                 reported = json.loads(score_output.read_text(encoding="utf-8"))
 
-                gold = read_jsonl_strict(instance_root / "gold_private_sample.jsonl")
-                gold_map = {row["id"]: row["answer"] for row in gold}
-                pred_map = {row["id"]: row["answer"] for row in predictions}
-                per_item = {
-                    item_id: canonical_json(pred_map[item_id]) == canonical_json(gold_map[item_id])
-                    for item_id in sorted(gold_map)
-                }
-                correct = sum(per_item.values())
-                summary = ScoreSummary(
-                    total=len(gold_map),
-                    correct=correct,
-                    accuracy=correct / len(gold_map),
-                )
-                reported_summary = ScoreSummary(
-                    total=reported.get("total"),
-                    correct=reported.get("correct"),
-                    accuracy=reported.get("accuracy"),
-                    schema_version=reported.get("schema_version"),
-                )
-                if reported_summary != summary:
-                    raise RuntimeError("creator scorer disagrees with controller exact-match score")
+                with trace_span("bba.solver.controller_scorer", {
+                    "bba.epoch.id": self.manifest.epoch_id,
+                    "bba.snapshot.id": snapshot.snapshot_id,
+                    "bba.solver.identity": solver.artifact_id,
+                }):
+                    gold = read_jsonl_strict(
+                        instance_root / "gold_private_sample.jsonl"
+                    )
+                    gold_map = {row["id"]: row["answer"] for row in gold}
+                    pred_map = {row["id"]: row["answer"] for row in predictions}
+                    per_item = {
+                        item_id: canonical_json(pred_map[item_id])
+                        == canonical_json(gold_map[item_id])
+                        for item_id in sorted(gold_map)
+                    }
+                    correct = sum(per_item.values())
+                    summary = ScoreSummary(
+                        total=len(gold_map),
+                        correct=correct,
+                        accuracy=correct / len(gold_map),
+                    )
+                    reported_summary = ScoreSummary(
+                        total=reported.get("total"),
+                        correct=reported.get("correct"),
+                        accuracy=reported.get("accuracy"),
+                        schema_version=reported.get("schema_version"),
+                    )
+                    if reported_summary != summary:
+                        raise RuntimeError(
+                            "creator scorer disagrees with controller exact-match score"
+                        )
                 controller_report = cell_root / "controller-scorer-report.json"
                 controller_report.write_bytes(canonical_json({
                     "schema_version": 2,
@@ -772,6 +798,16 @@ class TournamentController:
             error=selected.error,
         )
 
+    @traced(
+        "bba.solver.cell",
+        lambda self, snapshot, solver, repetition: {
+            "bba.epoch.id": self.manifest.epoch_id,
+            "bba.snapshot.id": snapshot.snapshot_id,
+            "bba.solver.identity": solver.artifact_id,
+            "bba.solver.publisher": solver.publisher,
+            "bba.solver.repetition": repetition,
+        },
+    )
     def _execute_solver_cell(
         self,
         snapshot: CandidateSnapshot,
@@ -905,6 +941,15 @@ class TournamentController:
             group_keys = remaining
         return selected
 
+    @traced(
+        "bba.epoch.public",
+        lambda self: {
+            "bba.epoch.id": self.manifest.epoch_id,
+            "bba.protocol.version": self.manifest.protocol_version,
+            "bba.model.count": len(self.manifest.cohort),
+            "bba.creator.rounds": self.manifest.thresholds.rounds,
+        },
+    )
     def run_public_epoch(self) -> None:
         expected = {identity.artifact_id for identity in self.manifest.cohort}
         if self.validator is None:
@@ -952,14 +997,20 @@ class TournamentController:
                     output = Path(temporary) / "design"
                     output.mkdir()
                     try:
-                        backend.build(
-                            creator,
-                            round_index,
-                            output,
-                            feedback,
-                            Path(parent.design_path) if parent else None,
-                            self.manifest,
-                        )
+                        with trace_span("bba.creator.invocation", {
+                            "bba.epoch.id": self.manifest.epoch_id,
+                            "bba.creator.identity": creator.artifact_id,
+                            "bba.creator.publisher": creator.publisher,
+                            "bba.creator.round": round_index,
+                        }):
+                            backend.build(
+                                creator,
+                                round_index,
+                                output,
+                                feedback,
+                                Path(parent.design_path) if parent else None,
+                                self.manifest,
+                            )
                     except Exception as exc:
                         self.state.fail(self.manifest.epoch_id, work_id, str(exc))
                         self._publish_agent_trace(
@@ -1032,13 +1083,18 @@ class TournamentController:
                             prefix="bba-instance-materialize-"
                         ) as temporary:
                             generated_output = Path(temporary) / "instance"
-                            validation = self.validator.validate(
-                                Path(snapshot.design_path),
-                                snapshot.snapshot_id,
-                                snapshot.design_digest,
-                                seed,
-                                generated_output,
-                            )
+                            with trace_span("bba.candidate.validation", {
+                                "bba.epoch.id": self.manifest.epoch_id,
+                                "bba.snapshot.id": snapshot.snapshot_id,
+                                "bba.creator.round": round_index,
+                            }):
+                                validation = self.validator.validate(
+                                    Path(snapshot.design_path),
+                                    snapshot.snapshot_id,
+                                    snapshot.design_digest,
+                                    seed,
+                                    generated_output,
+                                )
                             if validation.passed:
                                 instance = self.evidence.freeze_instance(
                                     self.manifest.epoch_id,
@@ -1417,6 +1473,10 @@ class TournamentController:
             for snapshot in self.snapshots
         ]
 
+    @traced(
+        "bba.epoch.close_public",
+        lambda self: {"bba.epoch.id": self.manifest.epoch_id},
+    )
     def close_public_epoch(self) -> Dict[str, Any]:
         if self._public_closed:
             record = self.evidence.read_record(
@@ -1490,6 +1550,14 @@ class TournamentController:
             registry.append(promotion)
         return record
 
+    @traced(
+        "bba.audit.freeze_population",
+        lambda self, public_scores, defect_pairs: {
+            "bba.epoch.id": self.manifest.epoch_id,
+            "bba.audit.profile_count": len(public_scores),
+            "bba.audit.defect_pair_count": len(defect_pairs),
+        },
+    )
     def freeze_audit_population(
         self,
         public_scores: Mapping[str, float],

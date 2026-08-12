@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from threading import BoundedSemaphore
@@ -39,7 +40,8 @@ class BoundedScheduler:
                 def run(selected=callback, selected_publisher=publisher):
                     with self._publisher_slot(selected_publisher):
                         return selected()
-                futures[work_id] = executor.submit(run)
+                context = contextvars.copy_context()
+                futures[work_id] = executor.submit(context.run, run)
             for work_id, _publisher, _callback in ordered:
                 results[work_id] = futures[work_id].result()
         return results

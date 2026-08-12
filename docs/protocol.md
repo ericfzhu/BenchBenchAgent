@@ -132,6 +132,12 @@ The local operational record can contain model identities, session and
 invocation IDs, tool names, token counts, elapsed times, and error types.
 It must not contain prompts, tool arguments, tool results, model output,
 predictions, debrief text, private gold, or hidden audit content.
+BBA can export optional OpenTelemetry traces to an OTLP HTTP endpoint on the
+local host. Export must be off by default. Export failure must not stop an
+epoch. An export filter must remove message content, descriptions, exception
+text, stack traces, events, links, tool arguments, and tool results. Exported
+traces must not contain ADK session or invocation IDs. They are operational
+data. They are not evidence, state, or ranking input.
 
 Each successful solver attempt must submit a structured debrief after it locks
 all predictions. The debrief must contain one record for each item. Each record
