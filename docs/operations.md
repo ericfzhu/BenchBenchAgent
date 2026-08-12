@@ -285,36 +285,15 @@ The command writes a signed epoch record and an append-only registry record.
 
 ## 13. Freeze the public audit population
 
-The audit authority prepares the public evaluator profiles before it opens the holdout.
-The score file is a JSON object with normalized values:
-
-```json
-{
-  "base-profile": 0.90,
-  "damaged-profile": 0.20,
-  "public-optimizer": 0.99
-}
-```
-
-The defect-pair file is a JSON array:
-
-```json
-[
-  {
-    "base_id": "base-profile",
-    "damaged_id": "damaged-profile",
-    "category": "controlled_damage"
-  }
-]
-```
+BBA builds the public evaluator profiles from stored evidence.
+BBA also builds the matched damage profiles and the public-optimizer control.
+The operator does not prepare a score file.
 
 Freeze these public values:
 
 ```bash
 .venv/bin/bba epoch freeze-audit \
   --epoch-id EPOCH_ID \
-  --public-scores public-scores.json \
-  --defect-pairs defect-pairs.json \
   --evidence-root .bba
 ```
 
@@ -336,7 +315,7 @@ The phase becomes `public_closed`.
 
 ## 15. Run the sealed audit
 
-The audit authority can now open this file:
+BBA can now open this file:
 
 ```text
 .bba/epochs/EPOCH_ID/private/holdout-plan.json
@@ -344,25 +323,19 @@ The audit authority can now open this file:
 
 The file matches all commitments in the manifest.
 
-Prepare two JSON score objects:
-
-- The composite holdout scores
-- The hidden-only holdout scores
-
 Run the audit:
 
 ```bash
 .venv/bin/bba epoch audit \
   --epoch-id EPOCH_ID \
-  --composite-holdout composite-holdout.json \
-  --hidden-only-holdout hidden-only-holdout.json \
-  --revealed-material .bba/epochs/EPOCH_ID/private/holdout-plan.json \
   --evidence-root .bba
 ```
 
 Check the audit status and every component value.
 Do not use only the combined BBB value.
-Retire the revealed holdout after this command.
+BBA generates the fresh instances and runs the committed hidden panel.
+BBA derives both target vectors from stored evidence.
+BBA retires the revealed holdout after this command.
 
 ## 16. Local files
 

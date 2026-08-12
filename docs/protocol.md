@@ -372,6 +372,8 @@ BBA must append canonical records after public closure.
 ## 13. Public closure
 
 The controller must freeze the public audit population before public closure.
+The controller must calculate all public profile scores from stored evidence.
+The operator must not supply a public audit score file.
 The controller must not include hidden evidence in the public evaluation record.
 
 The public record must contain these items:
@@ -388,6 +390,8 @@ The public record must contain these items:
 
 The controller must run the holdout audit only after public closure.
 The revealed hidden material must match all frozen commitments.
+The operator must not supply a composite or hidden-only score file.
+BBA must generate fresh instances, run the committed hidden panel, and derive both targets from stored evidence.
 
 The audit must use these two targets:
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -22,12 +23,17 @@ def new_epoch_id() -> str:
 def create_hidden_epoch_material(epoch_id: str) -> dict[str, Any]:
     """Create private inputs before any creator run."""
 
+    scaffold_seed = secrets.randbits(63)
+    hidden_models = tuple(
+        replace(model, scaffold=f"sealed-v1-{scaffold_seed:x}")
+        for model in SERVERLESS_COHORT
+    )
     return {
         "hidden_solver_panel": {
             "epoch_id": epoch_id,
             "catalog_version": CATALOG_VERSION,
-            "models": to_primitive(SERVERLESS_COHORT),
-            "scaffold_seed": secrets.randbits(63),
+            "models": to_primitive(hidden_models),
+            "scaffold_seed": scaffold_seed,
         },
         "hidden_seeds": {
             "generator_seeds": [secrets.randbits(63) for _ in range(3)],

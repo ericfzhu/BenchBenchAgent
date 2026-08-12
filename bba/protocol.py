@@ -60,6 +60,7 @@ class ModelIdentity:
     family: str
     adk_model: str
     reasoning: str = "default"
+    scaffold: str = "public-v1"
     tools: tuple = ()
 
     def __post_init__(self) -> None:
@@ -75,7 +76,7 @@ class ModelIdentity:
 
     @property
     def artifact_id(self) -> str:
-        raw = f"gcp__{self.publisher}__{self.model}__{self.reasoning}"
+        raw = f"gcp__{self.publisher}__{self.model}__{self.reasoning}__{self.scaffold}"
         return re.sub(r"[^a-zA-Z0-9._-]+", "_", raw)
 
 

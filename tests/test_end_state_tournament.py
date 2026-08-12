@@ -8,11 +8,11 @@ from pathlib import Path
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from bba.audit import DefectPair
+from bba.audit_runner import SealedAuditRunner, build_public_audit_population
 from bba.evidence import EvidenceStore
 from bba.errors import ProviderFailure
+from bba.holdouts import HoldoutRegistry
 from bba.protocol import (
-    AuditStatus,
     DecisionThresholds,
     ExperimentManifest,
     ModelIdentity,
@@ -20,6 +20,7 @@ from bba.protocol import (
     ReviewFindings,
     SandboxCapabilities,
     digest_json,
+    to_primitive,
 )
 from tests.fixtures import CalibratedSolverFixture, ExecutableCreatorFixture, LocalFixtureSandbox
 from bba.tournament import TournamentController
@@ -40,8 +41,17 @@ class TestEndStateTournament(unittest.TestCase):
             ModelIdentity("google", "delta", "family-a", "gemini:delta"),
         )
         self.hidden_material = {
-            "hidden_solver_panel": ["sealed-a", "sealed-b"],
-            "hidden_seeds": [881, 883],
+            "hidden_solver_panel": {
+                "models": to_primitive(tuple(
+                    replace(identity, scaffold="sealed-fixture-v1")
+                    for identity in self.cohort
+                )),
+                "scaffold_seed": 991,
+            },
+            "hidden_seeds": {
+                "generator_seeds": [881, 883, 887],
+                "solver_seeds": [907, 911, 919],
+            },
             "audit_policy": {"version": "audit-v1"},
         }
         self.manifest = ExperimentManifest(
@@ -58,9 +68,16 @@ class TestEndStateTournament(unittest.TestCase):
         )
         creator_biases = (0.20, 0.28, 0.36, 0.50)
         solver_skills = (0.45, 0.50, 0.55, 0.60)
+        evidence = EvidenceStore(self.root)
+        evidence.freeze_epoch_setup(self.manifest, self.hidden_material)
+        HoldoutRegistry(evidence).transition(
+            self.manifest.epoch_id,
+            self.manifest.hidden_commitments,
+            "committed",
+        )
         self.controller = TournamentController(
             self.manifest,
-            EvidenceStore(self.root),
+            evidence,
             PackageValidator(LocalFixtureSandbox(acknowledge_unsafe=True)),
             {
                 identity.artifact_id: ExecutableCreatorFixture(bias)
@@ -88,6 +105,34 @@ class TestEndStateTournament(unittest.TestCase):
             scorer_consistent=True,
             no_arbitrary_obscurity=True,
             useful_evaluation=True,
+        )
+
+    def test_automatic_sealed_audit_uses_no_score_files(self):
+        self.controller.run_public_epoch()
+        population = build_public_audit_population(
+            self.controller, self.controller.validator
+        )
+        self.assertIn("control:public-optimizer", population["public_scores"])
+        self.controller.close_public_epoch()
+        hidden_cohort = tuple(
+            replace(identity, scaffold="sealed-fixture-v1")
+            for identity in self.cohort
+        )
+        hidden_backends = {
+            identity.artifact_id: CalibratedSolverFixture(0.52)
+            for identity in hidden_cohort
+        }
+        audit = SealedAuditRunner(
+            self.controller,
+            self.controller.validator,
+            hidden_backends,
+        ).run()
+        self.assertIn("composite", audit["targets"])
+        self.assertIn("hidden_only", audit["targets"])
+        self.assertTrue(audit["holdout_retired"])
+        self.assertEqual(len(audit["hidden_solver_cells"]), 48)
+        self.assertTrue(
+            all(all(checks.values()) for checks in audit["damage_checks"].values())
         )
 
     def tearDown(self):
@@ -136,9 +181,6 @@ class TestEndStateTournament(unittest.TestCase):
             self.assertEqual(chain[1].parent_snapshot_id, chain[0].snapshot_id)
             self.assertEqual(chain[2].parent_snapshot_id, chain[1].snapshot_id)
 
-        with self.assertRaises(RuntimeError):
-            self.controller.run_holdout_audit({}, {}, self.hidden_material)
-
         final_snapshots = [snapshot for snapshot in self.controller.snapshots if snapshot.round_index == 2]
         for snapshot in final_snapshots:
             gold = {
@@ -174,13 +216,10 @@ class TestEndStateTournament(unittest.TestCase):
             )
             self.assertEqual(repeated, signed)
 
-        public_scores = {"good": 0.90, "okay": 0.70, "optimizer": 0.99, "damaged": 0.20}
-        defect_pairs = [DefectPair("good", "damaged", "controlled_damage")]
-        population = self.controller.freeze_audit_population(public_scores, defect_pairs)
-        self.assertEqual(
-            self.controller.freeze_audit_population(public_scores, defect_pairs),
-            population,
+        population = build_public_audit_population(
+            self.controller, self.controller.validator
         )
+        self.assertIn("control:public-optimizer", population["public_scores"])
         public = self.controller.close_public_epoch()
         self.assertEqual(self.controller.close_public_epoch(), public)
         statuses = public["candidate_statuses"]
@@ -192,22 +231,6 @@ class TestEndStateTournament(unittest.TestCase):
         self.assertTrue(all(row["canonical_benchmarks"] == 3 for row in public["solver_ranking"]))
         self.assertFalse(public["hidden_evidence_included"])
 
-        # A controlled public optimizer tops the visible score while collapsing
-        # on the sealed target; the audit must not validate the evaluator.
-        composite = {"good": 0.92, "okay": 0.68, "optimizer": 0.30, "damaged": 0.10}
-        hidden = {"good": 0.95, "okay": 0.65, "optimizer": 0.05, "damaged": 0.15}
-        audit = self.controller.run_holdout_audit(
-            composite,
-            hidden,
-            self.hidden_material,
-        )
-        self.assertEqual(audit["status"], AuditStatus.UNVALIDATED.value)
-        self.assertIn("pairwise_within_public_top_quartile", audit["targets"]["hidden_only"])
-        self.assertTrue(audit["holdout_retired"])
-        self.assertEqual(
-            self.controller.run_holdout_audit(composite, hidden, self.hidden_material),
-            audit,
-        )
 
     def test_public_epoch_resumes_after_an_interrupted_creator(self):
         class InterruptOnce:

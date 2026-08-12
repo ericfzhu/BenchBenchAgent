@@ -671,3 +671,30 @@ def build_adk_backends(
             instruction=solver_instruction,
         )
     return creators, solvers
+
+
+def build_hidden_solver_backends(
+    manifest: ExperimentManifest,
+    hidden_panel: Mapping[str, Any],
+) -> Mapping[str, AdkSolverBackend]:
+    """Build the committed sealed-scaffold panel after public closure."""
+
+    from bba.protocol import model_identity_from_mapping
+
+    configure_gcp_environment(manifest)
+    scaffold_seed = int(hidden_panel["scaffold_seed"])
+    instruction = (
+        SOLVER_INSTRUCTION
+        + "\nUse the sealed BBA solver scaffold. "
+        + f"Scaffold version token: {scaffold_seed:x}."
+    )
+    result = {}
+    public = {item.artifact_id for item in manifest.cohort}
+    for value in hidden_panel["models"]:
+        identity = model_identity_from_mapping(value)
+        if identity.artifact_id in public:
+            raise ValueError("hidden solver identity is not distinct from the public panel")
+        result[identity.artifact_id] = AdkSolverBackend(
+            resolve_model(identity), instruction=instruction
+        )
+    return result

@@ -8,8 +8,8 @@ import sys
 from pathlib import Path
 from typing import Any, Sequence
 
-from bba.adk_runtime import build_adk_backends
-from bba.audit import DefectPair
+from bba.adk_runtime import build_adk_backends, build_hidden_solver_backends
+from bba.audit_runner import SealedAuditRunner, build_public_audit_population
 from bba.catalog import catalog_summary
 from bba.evidence import EvidenceStore, read_json, tree_digest
 from bba.epoch_setup import create_experiment_manifest, new_epoch_id
@@ -261,14 +261,18 @@ def _epoch_record_review(args: argparse.Namespace) -> int:
 
 def _epoch_freeze_audit(args: argparse.Namespace) -> int:
     evidence = _evidence(args)
-    scores = read_json(Path(args.public_scores))
-    pairs_value = read_json(Path(args.defect_pairs))
-    if not isinstance(scores, dict) or not isinstance(pairs_value, list):
-        raise ValueError("audit inputs must be a score object and a defect-pair array")
-    pairs = [DefectPair(**item) for item in pairs_value]
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
         controller = _load_controller(evidence, args.epoch_id, _state(evidence))
-        _print_json(controller.freeze_audit_population(scores, pairs))
+        sandbox = SecureSandbox(
+            memory_mb=controller.manifest.budget.memory_mb,
+            process_limit=controller.manifest.budget.process_limit,
+            cpu_seconds=controller.manifest.budget.cpu_seconds,
+        )
+        validator = PackageValidator(
+            sandbox,
+            sample_count=controller.manifest.thresholds.sample_count,
+        )
+        _print_json(build_public_audit_population(controller, validator))
     return 0
 
 
@@ -282,16 +286,24 @@ def _epoch_close(args: argparse.Namespace) -> int:
 
 def _epoch_audit(args: argparse.Namespace) -> int:
     evidence = _evidence(args)
-    composite = read_json(Path(args.composite_holdout))
-    hidden_only = read_json(Path(args.hidden_only_holdout))
-    revealed = read_json(Path(args.revealed_material))
-    if not isinstance(composite, dict) or not isinstance(hidden_only, dict):
-        raise ValueError("holdout score inputs must be JSON objects")
-    if not isinstance(revealed, dict):
-        raise ValueError("revealed material must be one JSON object")
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
         controller = _load_controller(evidence, args.epoch_id, _state(evidence))
-        _print_json(controller.run_holdout_audit(composite, hidden_only, revealed))
+        private = read_json(
+            evidence.epoch_root(args.epoch_id) / "private" / "holdout-plan.json"
+        )
+        sandbox = SecureSandbox(
+            memory_mb=controller.manifest.budget.memory_mb,
+            process_limit=controller.manifest.budget.process_limit,
+            cpu_seconds=controller.manifest.budget.cpu_seconds,
+        )
+        validator = PackageValidator(
+            sandbox,
+            sample_count=controller.manifest.thresholds.sample_count,
+        )
+        hidden = build_hidden_solver_backends(
+            controller.manifest, private["hidden_solver_panel"]
+        )
+        _print_json(SealedAuditRunner(controller, validator, hidden).run())
     return 0
 
 
@@ -368,8 +380,6 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
         "freeze-audit", help="freeze public evaluator scores before holdout access"
     )
     _add_epoch_id(freeze)
-    freeze.add_argument("--public-scores", required=True)
-    freeze.add_argument("--defect-pairs", required=True)
     freeze.set_defaults(handler=_epoch_freeze_audit)
 
     close = epoch_commands.add_parser("close", help="publish the public evaluation")
@@ -378,9 +388,6 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
 
     audit = epoch_commands.add_parser("audit", help="open and score the sealed holdout")
     _add_epoch_id(audit)
-    audit.add_argument("--composite-holdout", required=True)
-    audit.add_argument("--hidden-only-holdout", required=True)
-    audit.add_argument("--revealed-material", required=True)
     audit.set_defaults(handler=_epoch_audit)
 
 
