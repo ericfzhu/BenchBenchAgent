@@ -345,10 +345,21 @@ The reviewer must check these properties:
 The controller selects six of the 30 items after the package freeze.
 The reviewer must reconstruct all six answers from public material.
 An approval must fail if one reconstructed answer is incorrect.
+An approval must require passed mechanical validation.
+It must require a complete successful solver panel and an eligible final-round status.
+Each construct-validity finding must pass.
+If a reviewer finds a discrepancy, the decision must be `escalated`.
+A second decision must use a different reviewer and a different key.
 
 The promotion record must contain the reviewer ID, candidate digest, evidence digests, decision, limitations, time, key ID, and signature.
+The signature must use Ed25519.
+The reviewer trust registry must contain the public key.
+Evidence must not contain the reviewer private key.
+An independent process must verify the record without the private key.
 The registry must append the record.
 The registry must not change an old record.
+The canonical registry must contain only approved records.
+BBA must append canonical records after public closure.
 
 ## 13. Public closure
 

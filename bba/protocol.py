@@ -341,6 +341,20 @@ class ValidationRecord:
 
 
 @dataclass(frozen=True)
+class ReviewFindings:
+    named_capability_valid: bool
+    public_materials_sufficient: bool
+    oracle_consistent: bool
+    scorer_consistent: bool
+    no_arbitrary_obscurity: bool
+    useful_evaluation: bool
+
+    @property
+    def all_passed(self) -> bool:
+        return all(to_primitive(self).values())
+
+
+@dataclass(frozen=True)
 class PromotionRecord:
     design_digest: str
     instance_digest: str
@@ -348,10 +362,12 @@ class PromotionRecord:
     decision: PromotionDecision
     sampled_item_ids: tuple
     reconstructed_answers_digest: str
+    findings: ReviewFindings
     evidence_digests: Mapping[str, str]
     limitations: tuple
     timestamp: str
     key_id: str
+    prior_review_digest: Optional[str] = None
     signature: str = ""
 
     def unsigned_payload(self) -> Dict[str, Any]:
@@ -450,4 +466,5 @@ def promotion_record_from_mapping(value: Mapping[str, Any]) -> PromotionRecord:
     data["decision"] = PromotionDecision(data["decision"])
     data["sampled_item_ids"] = tuple(data.get("sampled_item_ids", ()))
     data["limitations"] = tuple(data.get("limitations", ()))
+    data["findings"] = ReviewFindings(**dict(data["findings"]))
     return PromotionRecord(**data)

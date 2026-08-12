@@ -16,6 +16,7 @@ from bba.epoch_setup import create_experiment_manifest, new_epoch_id
 from bba.gcp import discover_gcp_project
 from bba.protocol import (
     PromotionDecision,
+    ReviewFindings,
     to_primitive,
 )
 from bba.replay import replay_solver_attempt
@@ -230,6 +231,10 @@ def _epoch_record_review(args: argparse.Namespace) -> int:
     if not isinstance(answers, dict):
         raise ValueError("review answers must be one JSON object keyed by item ID")
     signing_key = Path(args.signing_key_file).read_bytes().strip()
+    public_key = Path(args.public_key_file).read_bytes().strip()
+    findings_value = read_json(Path(args.findings))
+    if not isinstance(findings_value, dict):
+        raise ValueError("review findings must be one JSON object")
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
         controller = _load_controller(evidence, args.epoch_id, _state(evidence))
         snapshot = controller.snapshot_by_id(args.snapshot_id)
@@ -238,9 +243,12 @@ def _epoch_record_review(args: argparse.Namespace) -> int:
             args.reviewer_id,
             answers,
             PromotionDecision(args.decision),
+            ReviewFindings(**findings_value),
             args.limitation,
             args.key_id,
             signing_key,
+            public_key,
+            args.prior_review_digest,
         )
         _print_json(record)
     return 0
@@ -338,6 +346,7 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
     review.add_argument("--snapshot-id", required=True)
     review.add_argument("--reviewer-id", required=True)
     review.add_argument("--answers", required=True)
+    review.add_argument("--findings", required=True)
     review.add_argument(
         "--decision",
         required=True,
@@ -346,6 +355,8 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
     review.add_argument("--limitation", action="append", default=[])
     review.add_argument("--key-id", required=True)
     review.add_argument("--signing-key-file", required=True)
+    review.add_argument("--public-key-file", required=True)
+    review.add_argument("--prior-review-digest")
     review.set_defaults(handler=_epoch_record_review)
 
     freeze = epoch_commands.add_parser(

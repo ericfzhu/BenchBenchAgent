@@ -18,12 +18,14 @@ from bba.errors import PredictionParseFailure, ProviderFailure, SolverTimedOut
 from bba.evidence import EvidenceStore, file_digest, read_json
 from bba.protocol import (
     CandidateSnapshot,
+    CandidateStatus,
     CellState,
     ExperimentManifest,
     EvaluationInstance,
     ModelIdentity,
     PromotionDecision,
     PromotionRecord,
+    ReviewFindings,
     ScoreSummary,
     SolverAttempt,
     SolverCell,
@@ -334,7 +336,13 @@ class TournamentController:
         promotion_root = self.evidence.epoch_root(self.manifest.epoch_id) / "promotions"
         for path in sorted(promotion_root.glob("*.json")):
             record = promotion_record_from_mapping(read_json(path))
-            self.promotions[record.design_digest] = record
+            if record.decision == PromotionDecision.APPROVED:
+                existing = self.promotions.get(record.design_digest)
+                if existing is not None and existing != record:
+                    raise ValueError(
+                        f"multiple approved promotion records exist: {record.design_digest}"
+                    )
+                self.promotions[record.design_digest] = record
 
         audit_population_path = self.evidence.record_path(
             self.manifest.epoch_id, "audit", "public-population"
@@ -413,7 +421,11 @@ class TournamentController:
 
     def _freeze_round_seed(self, round_index: int) -> int:
         existing = self.round_seeds.get(round_index)
-        if existing is not None:
+        if (
+            existing is not None
+            and existing.decision == decision
+            and existing.prior_review_digest == prior_review_digest
+        ):
             return existing
         round_snapshots = [
             snapshot for snapshot in self.snapshots if snapshot.round_index == round_index
@@ -938,9 +950,12 @@ class TournamentController:
         reviewer_id: str,
         reconstructed_answers: Mapping[str, Any],
         decision: PromotionDecision,
+        findings: ReviewFindings,
         limitations: Sequence[str],
         key_id: str,
         signing_key: bytes,
+        public_key: bytes,
+        prior_review_digest: Optional[str] = None,
     ) -> PromotionRecord:
         if not self._public_run_is_complete():
             raise RuntimeError("human review requires a complete public run")
@@ -953,24 +968,29 @@ class TournamentController:
             canonical_json(dict(reconstructed_answers))
         ).hexdigest()
         registry = PromotionRegistry(self.evidence)
+        registry.trust_key(key_id, public_key)
         instance = self.instances[snapshot.snapshot_id]
         existing = self.promotions.get(snapshot.design_digest)
         if existing is not None:
-            if not registry.verify(existing, signing_key):
-                raise ValueError("the signing key does not verify the existing review")
+            if not registry.verify(existing):
+                raise ValueError("the trusted public key does not verify the existing review")
             requested_fields = (
                 reviewer_id,
                 decision,
                 reconstructed_digest,
+                findings,
                 tuple(limitations),
                 key_id,
+                prior_review_digest,
             )
             existing_fields = (
                 existing.reviewer_id,
                 existing.decision,
                 existing.reconstructed_answers_digest,
+                existing.findings,
                 existing.limitations,
                 existing.key_id,
+                existing.prior_review_digest,
             )
             if (
                 requested_fields != existing_fields
@@ -983,7 +1003,10 @@ class TournamentController:
                 snapshot.design_digest,
                 existing,
             )
-            registry.append(existing, signing_key)
+            target_registry = PromotionRegistry(
+                self.evidence, registry_name="promotion-history"
+            )
+            target_registry.append(existing)
             self.promotions[snapshot.design_digest] = existing
             return existing
         gold = read_jsonl_strict(Path(instance.instance_path) / "gold_private_sample.jsonl")
@@ -994,6 +1017,53 @@ class TournamentController:
         )
         if decision == PromotionDecision.APPROVED and not all_correct:
             raise ValueError("an approved review must reconstruct every sampled answer")
+        validation = self.validations.get(snapshot.snapshot_id)
+        cells = self.cells.get(snapshot.snapshot_id, ())
+        expected_cell_count = (
+            len(self.manifest.cohort)
+            * self.manifest.thresholds.solver_repetitions
+        )
+        eligible_status = classify_candidate(
+            snapshot,
+            validation,
+            cells,
+            self.manifest.cohort,
+            self.manifest.thresholds.solver_repetitions,
+            self.manifest.thresholds.rejection_accuracy,
+        ).status
+        if decision == PromotionDecision.APPROVED:
+            if validation is None or not validation.passed:
+                raise ValueError("approval requires passed mechanical validation")
+            if len(cells) != expected_cell_count or any(
+                cell.state != CellState.SUCCESS for cell in cells
+            ):
+                raise ValueError("approval requires a complete successful solver panel")
+            if eligible_status not in {
+                CandidateStatus.AWAITING_REVIEW,
+                CandidateStatus.SOLVABILITY_AUDIT,
+            }:
+                raise ValueError(
+                    f"candidate status is not eligible for approval: {eligible_status.value}"
+                )
+            if not findings.all_passed:
+                raise ValueError("approval requires every construct-validity finding to pass")
+        if decision == PromotionDecision.ESCALATED and prior_review_digest is not None:
+            raise ValueError("the first escalated review cannot refer to a prior review")
+        if prior_review_digest is not None:
+            prior_paths = sorted(
+                (self.evidence.epoch_root(self.manifest.epoch_id) / "promotions").glob(
+                    f"{snapshot.design_digest}*.json"
+                )
+            )
+            prior_records = [promotion_record_from_mapping(read_json(path)) for path in prior_paths]
+            prior = next(
+                (item for item in prior_records if digest_json(item) == prior_review_digest),
+                None,
+            )
+            if prior is None or prior.decision != PromotionDecision.ESCALATED:
+                raise ValueError("second review must refer to an escalated first review")
+            if prior.reviewer_id == reviewer_id or prior.key_id == key_id:
+                raise ValueError("second review requires a different reviewer and key")
         validation_path = (
             self.evidence.epoch_root(self.manifest.epoch_id)
             / "validations"
@@ -1018,20 +1088,31 @@ class TournamentController:
             decision=decision,
             sampled_item_ids=tuple(expected_ids),
             reconstructed_answers_digest=reconstructed_digest,
+            findings=findings,
             evidence_digests=evidence_digests,
             limitations=tuple(limitations),
             timestamp=datetime.now(timezone.utc).isoformat(),
             key_id=key_id,
+            prior_review_digest=prior_review_digest,
         )
         signed = registry.sign(record, signing_key)
+        if not registry.verify(signed):
+            raise ValueError("trusted reviewer public key does not match the private key")
+        record_id = snapshot.design_digest
+        if prior_review_digest is not None or decision == PromotionDecision.ESCALATED:
+            record_id = f"{snapshot.design_digest}--{digest_json(signed)[:12]}"
         self.evidence.publish_record_idempotent(
             self.manifest.epoch_id,
             "promotions",
-            snapshot.design_digest,
+            record_id,
             signed,
         )
-        registry.append(signed, signing_key)
-        self.promotions[snapshot.design_digest] = signed
+        target_registry = PromotionRegistry(
+            self.evidence, registry_name="promotion-history"
+        )
+        target_registry.append(signed)
+        if signed.decision == PromotionDecision.APPROVED:
+            self.promotions[snapshot.design_digest] = signed
         return signed
 
     def _evaluations(self) -> List[CandidateEvaluation]:
@@ -1114,6 +1195,11 @@ class TournamentController:
         )
         self._public_closed = True
         self.state.set_phase(self.manifest.epoch_id, "public_closed")
+        registry = PromotionRegistry(self.evidence)
+        for promotion in sorted(
+            self.promotions.values(), key=lambda item: item.design_digest
+        ):
+            registry.append(promotion)
         return record
 
     def freeze_audit_population(

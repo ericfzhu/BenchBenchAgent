@@ -14,6 +14,7 @@ authors = [
 license = "MIT"
 dependencies = [
     "anthropic[vertex]>=0.78.0,<1.0.0",
+    "cryptography>=45.0.0,<51.0.0",
     "google-adk==2.6.3",
     "google-genai>=2.9.0,<3.0.0",
     "litellm>=1.84.0,<2.0.0",

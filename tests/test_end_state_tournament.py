@@ -5,6 +5,9 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from bba.audit import DefectPair
 from bba.evidence import EvidenceStore
 from bba.errors import ProviderFailure
@@ -14,6 +17,7 @@ from bba.protocol import (
     ExperimentManifest,
     ModelIdentity,
     PromotionDecision,
+    ReviewFindings,
     SandboxCapabilities,
     digest_json,
 )
@@ -66,6 +70,24 @@ class TestEndStateTournament(unittest.TestCase):
                 identity.artifact_id: CalibratedSolverFixture(skill)
                 for identity, skill in zip(self.cohort, solver_skills)
             },
+        )
+        self.review_private_key = Ed25519PrivateKey.generate()
+        self.review_private_bytes = self.review_private_key.private_bytes(
+            serialization.Encoding.PEM,
+            serialization.PrivateFormat.PKCS8,
+            serialization.NoEncryption(),
+        )
+        self.review_public_bytes = self.review_private_key.public_key().public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        self.passing_findings = ReviewFindings(
+            named_capability_valid=True,
+            public_materials_sufficient=True,
+            oracle_consistent=True,
+            scorer_consistent=True,
+            no_arbitrary_obscurity=True,
+            useful_evaluation=True,
         )
 
     def tearDown(self):
@@ -132,9 +154,11 @@ class TestEndStateTournament(unittest.TestCase):
                 reviewer_id="independent-reviewer",
                 reconstructed_answers={item_id: gold[item_id] for item_id in selected},
                 decision=PromotionDecision.APPROVED,
+                findings=self.passing_findings,
                 limitations=("Synthetic conformance fixture",),
                 key_id="reviewer-key-1",
-                signing_key=b"test-only-reviewer-secret",
+                signing_key=self.review_private_bytes,
+                public_key=self.review_public_bytes,
             )
             self.assertTrue(signed.signature)
             repeated = self.controller.record_human_review(
@@ -142,9 +166,11 @@ class TestEndStateTournament(unittest.TestCase):
                 reviewer_id="independent-reviewer",
                 reconstructed_answers={item_id: gold[item_id] for item_id in selected},
                 decision=PromotionDecision.APPROVED,
+                findings=self.passing_findings,
                 limitations=("Synthetic conformance fixture",),
                 key_id="reviewer-key-1",
-                signing_key=b"test-only-reviewer-secret",
+                signing_key=self.review_private_bytes,
+                public_key=self.review_public_bytes,
             )
             self.assertEqual(repeated, signed)
 
@@ -342,6 +368,33 @@ class TestEndStateTournament(unittest.TestCase):
             ["provider_error", "provider_error", "success"],
         )
         self.assertEqual(cell.selected_attempt_id, attempts[-1].attempt_id)
+
+    def test_approval_rejects_a_failed_construct_finding(self):
+        self.controller.run_public_epoch()
+        snapshot = next(
+            item for item in self.controller.snapshots if item.round_index == 2
+        )
+        gold = {
+            row["id"]: row["answer"]
+            for row in read_jsonl_strict(
+                Path(self.controller.instances[snapshot.snapshot_id].instance_path)
+                / "gold_private_sample.jsonl"
+            )
+        }
+        selected = self.controller.select_review_items(snapshot)
+        failed = replace(self.passing_findings, useful_evaluation=False)
+        with self.assertRaisesRegex(ValueError, "construct-validity"):
+            self.controller.record_human_review(
+                snapshot,
+                "independent-reviewer",
+                {item_id: gold[item_id] for item_id in selected},
+                PromotionDecision.APPROVED,
+                failed,
+                (),
+                "reviewer-key-failed",
+                self.review_private_bytes,
+                self.review_public_bytes,
+            )
 
 
 if __name__ == "__main__":
