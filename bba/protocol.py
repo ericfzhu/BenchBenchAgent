@@ -573,7 +573,10 @@ def solver_debrief_from_mapping(value: Mapping[str, Any] | Sequence[Any]) -> Sol
         schema_version = 1
     elif isinstance(value, Mapping):
         items_data = value.get("items", ())
-        schema_version = int(value.get("schema_version", 1))
+        try:
+            schema_version = int(float(str(value.get("schema_version", 1)).strip()))
+        except (ValueError, TypeError):
+            schema_version = 1
     else:
         items_data = ()
         schema_version = 1

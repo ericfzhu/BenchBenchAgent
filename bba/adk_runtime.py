@@ -840,7 +840,12 @@ class AdkSolverBackend(_TraceBackend):
                 value = {"schema_version": 1, "items": list(value)}
             elif isinstance(value, Mapping):
                 if "items" in value and isinstance(value["items"], (list, tuple)):
-                    value = {"schema_version": int(value.get("schema_version", 1)), "items": list(value["items"])}
+                    raw_version = value.get("schema_version", 1)
+                    try:
+                        parsed_ver = int(float(str(raw_version).strip()))
+                    except (ValueError, TypeError):
+                        parsed_ver = 1
+                    value = {"schema_version": parsed_ver, "items": list(value["items"])}
                 elif any(str(k).strip() in expected_set for k in value):
                     items_list = []
                     for k, v in value.items():
