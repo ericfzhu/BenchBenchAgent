@@ -203,15 +203,35 @@ def create_app(console: OperatorConsole) -> FastAPI:
     )
     app.state.console = console
     app.state.csrf_token = secrets.token_urlsafe(32)
+
+    def _is_allowed_host(hostname: Optional[str]) -> bool:
+        if not hostname:
+            return True
+        h = hostname.lower()
+        if h in {"localhost", "127.0.0.1", "::1", "testserver"}:
+            return True
+        if h.endswith((".c.googlers.com", ".corp.google.com", ".googlers.com", ".google.com")):
+            return True
+        return False
+
     app.add_middleware(
         TrustedHostMiddleware,
-        allowed_hosts=["localhost", "127.0.0.1", "[::1]", "testserver"],
+        allowed_hosts=[
+            "localhost",
+            "127.0.0.1",
+            "[::1]",
+            "testserver",
+            "*.c.googlers.com",
+            "*.corp.google.com",
+            "*.googlers.com",
+            "*.google.com",
+        ],
     )
 
     @app.middleware("http")
     async def local_security(request: Request, call_next):
         origin = request.headers.get("origin")
-        if origin and urlparse(origin).hostname not in {"localhost", "127.0.0.1", "::1", "testserver"}:
+        if origin and not _is_allowed_host(urlparse(origin).hostname):
             return HTMLResponse("Untrusted origin", status_code=403)
         response = await call_next(request)
         response.headers["Cache-Control"] = "no-store"
