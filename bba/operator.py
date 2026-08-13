@@ -173,7 +173,7 @@ class OperatorConsole:
                 manifest = self.evidence.load_manifest(path.parent.name)
                 status = self._status(manifest.epoch_id)
                 status.update({
-                    "created_at": manifest.created_at,
+                    "created_at": getattr(manifest, "created_at", None) or status.get("updated_at", "—"),
                     "catalog_version": manifest.catalog_version,
                     "model_count": len(manifest.cohort),
                 })
@@ -188,7 +188,7 @@ class OperatorConsole:
         value = self._status(epoch_id)
         value["manifest"] = {
             "catalog_version": manifest.catalog_version,
-            "created_at": manifest.created_at,
+            "created_at": getattr(manifest, "created_at", None) or value.get("updated_at", "—"),
             "gcp_project": manifest.gcp_project,
             "gcp_location": manifest.gcp_location,
             "models": len(manifest.cohort),
