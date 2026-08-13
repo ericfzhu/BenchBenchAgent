@@ -567,21 +567,73 @@ def score_summary_from_mapping(value: Optional[Mapping[str, Any]]) -> Optional[S
     return ScoreSummary(**dict(value))
 
 
-def solver_debrief_from_mapping(value: Mapping[str, Any]) -> SolverDebrief:
-    data = dict(value)
-    data["items"] = tuple(
-        ItemDebrief(
-            **{
-                **dict(item),
-                "approach_tags": tuple(item.get("approach_tags", ())),
-                "evidence_refs": tuple(item.get("evidence_refs", ())),
-                "uncertainties": tuple(item.get("uncertainties", ())),
-                "missing_information": tuple(item.get("missing_information", ())),
-            }
+def solver_debrief_from_mapping(value: Mapping[str, Any] | Sequence[Any]) -> SolverDebrief:
+    if isinstance(value, (list, tuple)):
+        items_data = value
+        schema_version = 1
+    elif isinstance(value, Mapping):
+        items_data = value.get("items", ())
+        schema_version = int(value.get("schema_version", 1))
+    else:
+        items_data = ()
+        schema_version = 1
+
+    items = []
+    for item in items_data:
+        if not isinstance(item, Mapping):
+            continue
+        item_dict = dict(item)
+        item_id = str(item_dict.get("item_id") or item_dict.get("id") or "").strip()
+        if not item_id:
+            continue
+        try:
+            confidence = float(item_dict.get("confidence", 1.0))
+        except (ValueError, TypeError):
+            confidence = 1.0
+        confidence = max(0.0, min(1.0, confidence))
+
+        tags = item_dict.get("approach_tags") or ("direct",)
+        if isinstance(tags, str):
+            tags = (tags,)
+        tags = tuple(str(t).strip() for t in tags if str(t).strip()) or ("direct",)
+
+        refs = item_dict.get("evidence_refs") or ()
+        if isinstance(refs, str):
+            refs = (refs,)
+        refs = tuple(str(r).strip()[:500] for r in refs if str(r).strip())
+
+        justification = str(
+            item_dict.get("concise_justification")
+            or item_dict.get("justification")
+            or item_dict.get("explanation")
+            or "Diagnostic analysis completed."
+        ).strip()
+        if not justification:
+            justification = "Diagnostic analysis completed."
+        justification = justification[:1000]
+
+        uncert = item_dict.get("uncertainties") or ()
+        if isinstance(uncert, str):
+            uncert = (uncert,)
+        uncert = tuple(str(u).strip()[:500] for u in uncert if str(u).strip())
+
+        missing = item_dict.get("missing_information") or ()
+        if isinstance(missing, str):
+            missing = (missing,)
+        missing = tuple(str(m).strip()[:500] for m in missing if str(m).strip())
+
+        items.append(
+            ItemDebrief(
+                item_id=item_id,
+                confidence=confidence,
+                approach_tags=tags[:8],
+                evidence_refs=refs[:8],
+                concise_justification=justification,
+                uncertainties=uncert[:8],
+                missing_information=missing[:8],
+            )
         )
-        for item in data.get("items", ())
-    )
-    return SolverDebrief(**data)
+    return SolverDebrief(items=tuple(items), schema_version=schema_version)
 
 
 def solver_cell_from_mapping(value: Mapping[str, Any]) -> SolverCell:

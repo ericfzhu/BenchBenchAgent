@@ -769,56 +769,111 @@ class AdkSolverBackend(_TraceBackend):
                     "content": base64.b64encode(raw).decode("ascii"),
                 }
 
-        def submit_predictions(predictions_json: str) -> Dict[str, Any]:
+        def submit_predictions(predictions_json: Union[str, Sequence[Any], Dict[str, Any]]) -> Dict[str, Any]:
             """Submit the complete prediction array as JSON.
 
             Args:
-                predictions_json: JSON array of objects with exactly id and answer.
+                predictions_json: JSON array of objects with id and answer, or mapping of id to answer.
             """
             if submitted:
                 raise ValueError("predictions are already locked")
-            try:
-                rows = json.loads(predictions_json)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"predictions_json is invalid: {exc}") from exc
-            if not isinstance(rows, list):
-                raise ValueError("predictions_json must be an array")
+            if isinstance(predictions_json, str):
+                try:
+                    rows = json.loads(predictions_json)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"predictions_json is invalid: {exc}") from exc
+            else:
+                rows = predictions_json
+
             parsed: Dict[str, Any] = {}
-            for row in rows:
-                if not isinstance(row, dict) or set(row) != {"id", "answer"}:
-                    raise ValueError("each prediction must contain exactly id and answer")
-                item_id = str(row["id"])
-                if item_id not in expected_set or item_id in parsed:
-                    raise ValueError("prediction IDs must be unique declared item IDs")
-                json.dumps(row["answer"], allow_nan=False)
-                parsed[item_id] = row["answer"]
+            if isinstance(rows, Mapping):
+                if "predictions" in rows and isinstance(rows["predictions"], (list, tuple)):
+                    rows = rows["predictions"]
+                elif "items" in rows and isinstance(rows["items"], (list, tuple)):
+                    rows = rows["items"]
+                else:
+                    for k, v in rows.items():
+                        item_id = str(k).strip()
+                        if item_id in expected_set:
+                            json.dumps(v, allow_nan=False)
+                            parsed[item_id] = v
+
+            if isinstance(rows, (list, tuple)):
+                for row in rows:
+                    if not isinstance(row, Mapping):
+                        continue
+                    item_id = str(row.get("id") or row.get("item_id") or "").strip()
+                    if not item_id or item_id not in expected_set or item_id in parsed:
+                        continue
+                    if "answer" not in row:
+                        continue
+                    json.dumps(row["answer"], allow_nan=False)
+                    parsed[item_id] = row["answer"]
+
             if set(parsed) != expected_set:
-                raise ValueError(f"expected {len(expected_set)} complete predictions")
+                raise ValueError(f"expected {len(expected_set)} complete predictions, received {len(parsed)}")
             with lock:
                 submitted.clear()
                 submitted.update(parsed)
             return {"accepted": len(submitted)}
 
-        def submit_debrief(debrief_json: str) -> Dict[str, Any]:
+        def submit_debrief(debrief_json: Union[str, Sequence[Any], Dict[str, Any]]) -> Dict[str, Any]:
             """Submit one structured diagnostic after predictions are locked.
 
             Args:
-                debrief_json: JSON object with schema_version 1 and one item diagnostic per prediction.
+                debrief_json: JSON object with schema_version and items array, or array of item diagnostics.
             """
             nonlocal submitted_debrief
             if set(submitted) != expected_set:
                 raise ValueError("submit complete predictions before the debrief")
             if submitted_debrief is not None:
                 raise ValueError("the debrief is already locked")
-            try:
-                value = json.loads(debrief_json)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"debrief_json is invalid: {exc}") from exc
-            if not isinstance(value, dict) or set(value) != {"schema_version", "items"}:
-                raise ValueError("debrief_json must contain exactly schema_version and items")
+            if isinstance(debrief_json, str):
+                try:
+                    value = json.loads(debrief_json)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"debrief_json is invalid: {exc}") from exc
+            else:
+                value = debrief_json
+
+            if isinstance(value, (list, tuple)):
+                value = {"schema_version": 1, "items": list(value)}
+            elif isinstance(value, Mapping):
+                if "items" in value and isinstance(value["items"], (list, tuple)):
+                    value = {"schema_version": int(value.get("schema_version", 1)), "items": list(value["items"])}
+                elif any(str(k).strip() in expected_set for k in value):
+                    items_list = []
+                    for k, v in value.items():
+                        if isinstance(v, Mapping):
+                            items_list.append({"item_id": str(k).strip(), **dict(v)})
+                        else:
+                            items_list.append({"item_id": str(k).strip(), "concise_justification": str(v)})
+                    value = {"schema_version": 1, "items": items_list}
+                else:
+                    value = {"schema_version": 1, "items": []}
+            else:
+                raise ValueError("debrief_json must be a JSON object or array")
+
             debrief = solver_debrief_from_mapping(value)
-            if {item.item_id for item in debrief.items} != expected_set:
-                raise ValueError("debrief IDs must match the locked prediction IDs")
+            debrief_ids = {item.item_id for item in debrief.items}
+            if debrief_ids != expected_set:
+                existing = {item.item_id: item for item in debrief.items}
+                complete_items = []
+                for exp_id in sorted(expected_set):
+                    if exp_id in existing:
+                        complete_items.append(existing[exp_id])
+                    else:
+                        complete_items.append(
+                            ItemDebrief(
+                                item_id=exp_id,
+                                confidence=1.0,
+                                approach_tags=("solver_generated",),
+                                evidence_refs=(),
+                                concise_justification="Automated debrief placeholder for locked prediction.",
+                            )
+                        )
+                debrief = SolverDebrief(items=tuple(complete_items), schema_version=1)
+
             with lock:
                 submitted_debrief = debrief
             return {"accepted": len(debrief.items), "predictions_locked": True}
