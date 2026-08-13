@@ -541,7 +541,9 @@ class AdkCreatorBackend(_TraceBackend):
             ]
             return {"files": sorted(files, key=lambda row: row["path"])}
 
-        def read_candidate_file(path: str, offset: int = 0, limit: int = 65536) -> Dict[str, Any]:
+        def read_candidate_file(
+            path: str, offset: Union[int, float, str] = 0, limit: Union[int, float, str] = 65536
+        ) -> Dict[str, Any]:
             """Read a UTF-8 candidate file chunk.
 
             Args:
@@ -550,16 +552,26 @@ class AdkCreatorBackend(_TraceBackend):
                 limit: Maximum number of bytes to return.
             """
             target = _safe_relative_path(output_dir, path)
-            if not target.is_file() or offset < 0 or not 1 <= limit <= 262144:
+            try:
+                offset_val = int(float(str(offset).strip()))
+            except (ValueError, TypeError):
+                offset_val = 0
+            try:
+                limit_val = int(float(str(limit).strip()))
+            except (ValueError, TypeError):
+                limit_val = 65536
+            offset_val = max(0, offset_val)
+            limit_val = max(1, min(262144, limit_val))
+            if not target.is_file():
                 raise ValueError("invalid candidate read request")
-            data = target.read_bytes()[offset:offset + limit]
+            data = target.read_bytes()[offset_val:offset_val + limit_val]
             total_bytes = target.stat().st_size
             return {
                 "path": path,
-                "offset": offset,
+                "offset": offset_val,
                 "total_bytes": total_bytes,
-                "eof": offset + len(data) >= total_bytes,
-                "content": data.decode("utf-8"),
+                "eof": offset_val + len(data) >= total_bytes,
+                "content": data.decode("utf-8", errors="replace"),
             }
 
         def write_candidate_file(path: str, content: str) -> Dict[str, Any]:
@@ -607,7 +619,9 @@ class AdkCreatorBackend(_TraceBackend):
                 finished = False
             return {"path": path, "deleted": True}
 
-        def run_candidate_python(script: str, args: list[str]) -> Dict[str, Any]:
+        def run_candidate_python(
+            script: str, args: Optional[Union[list[str], str]] = None
+        ) -> Dict[str, Any]:
             """Run candidate Python in the credential-free construction sandbox.
 
             Args:
@@ -617,9 +631,22 @@ class AdkCreatorBackend(_TraceBackend):
             target = _safe_relative_path(output_dir, script)
             if not target.is_file() or target.suffix != ".py":
                 raise ValueError("script must name a candidate Python file")
+            if args is None:
+                arg_list: list[str] = []
+            elif isinstance(args, str):
+                import shlex
+
+                try:
+                    arg_list = shlex.split(args)
+                except Exception:
+                    arg_list = [args]
+            elif isinstance(args, (list, tuple)):
+                arg_list = [str(arg) for arg in args]
+            else:
+                arg_list = [str(args)]
             result = self.construction_sandbox.run_python(
                 target,
-                [str(arg) for arg in args],
+                arg_list,
                 workspace=output_dir,
                 cwd=output_dir,
                 timeout_seconds=min(120, manifest.budget.creator_seconds),
@@ -631,7 +658,7 @@ class AdkCreatorBackend(_TraceBackend):
                 "stderr": result.stderr[-8000:],
             }
 
-        def finish_candidate() -> Dict[str, Any]:
+        def finish_candidate(*_args: Any, **_kwargs: Any) -> Dict[str, Any]:
             """Declare that the executable benchmark design is complete."""
             nonlocal finished
             finished = True
@@ -737,7 +764,9 @@ class AdkSolverBackend(_TraceBackend):
             ]
             return {"files": sorted(files, key=lambda row: row["path"])}
 
-        def read_bundle_file(path: str, offset: int = 0, limit: int = 65536) -> Dict[str, Any]:
+        def read_bundle_file(
+            path: str, offset: Union[int, float, str] = 0, limit: Union[int, float, str] = 65536
+        ) -> Dict[str, Any]:
             """Read a text or base64-encoded binary bundle file chunk.
 
             Args:
@@ -746,15 +775,25 @@ class AdkSolverBackend(_TraceBackend):
                 limit: Maximum number of bytes to return.
             """
             target = _safe_relative_path(root, path)
-            if not target.is_file() or offset < 0 or not 1 <= limit <= 262144:
+            try:
+                offset_val = int(float(str(offset).strip()))
+            except (ValueError, TypeError):
+                offset_val = 0
+            try:
+                limit_val = int(float(str(limit).strip()))
+            except (ValueError, TypeError):
+                limit_val = 65536
+            offset_val = max(0, offset_val)
+            limit_val = max(1, min(262144, limit_val))
+            if not target.is_file():
                 raise ValueError("invalid solver bundle read request")
-            raw = target.read_bytes()[offset:offset + limit]
+            raw = target.read_bytes()[offset_val:offset_val + limit_val]
             total_bytes = target.stat().st_size
             metadata = {
                 "path": path,
-                "offset": offset,
+                "offset": offset_val,
                 "total_bytes": total_bytes,
-                "eof": offset + len(raw) >= total_bytes,
+                "eof": offset_val + len(raw) >= total_bytes,
             }
             try:
                 return {
