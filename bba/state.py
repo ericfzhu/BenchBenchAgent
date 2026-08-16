@@ -127,6 +127,50 @@ class LocalStateStore:
             )
             connection.execute(f"PRAGMA user_version = {STATE_SCHEMA_VERSION}")
 
+    @staticmethod
+    def _reservation_storage_id(
+        connection: sqlite3.Connection,
+        epoch_id: str,
+        reservation_id: str,
+        *,
+        legacy_fallback: bool = False,
+    ) -> str:
+        """Bind a creator reservation to the current immutable work attempt.
+
+        Creator invocations use a stable logical reservation ID so the caller can
+        reconcile usage without carrying SQLite attempt state. Store each work
+        attempt under a distinct physical ID; repeated calls inside the same
+        attempt remain idempotent. Solver attempts already use unique IDs and are
+        left unchanged.
+        """
+
+        suffix = "--inference"
+        if not reservation_id.endswith(suffix):
+            return reservation_id
+        work_id = reservation_id[: -len(suffix)]
+        row = connection.execute(
+            "SELECT attempt_count FROM work_items WHERE epoch_id = ? AND work_id = ?",
+            (epoch_id, work_id),
+        ).fetchone()
+        if row is None or int(row["attempt_count"]) < 1:
+            return reservation_id
+        candidate = f"{reservation_id}--work-attempt-{int(row['attempt_count'])}"
+        if legacy_fallback:
+            candidate_row = connection.execute(
+                "SELECT 1 FROM inference_reservations "
+                "WHERE epoch_id = ? AND reservation_id = ?",
+                (epoch_id, candidate),
+            ).fetchone()
+            if candidate_row is None:
+                legacy_row = connection.execute(
+                    "SELECT 1 FROM inference_reservations "
+                    "WHERE epoch_id = ? AND reservation_id = ?",
+                    (epoch_id, reservation_id),
+                ).fetchone()
+                if legacy_row is not None:
+                    return reservation_id
+        return candidate
+
     def reserve_inference(
         self,
         epoch_id: str,
@@ -140,9 +184,12 @@ class LocalStateStore:
             raise ValueError("inference reservations cannot be negative")
         now = _utc_now()
         with self._transaction() as connection:
+            storage_id = self._reservation_storage_id(
+                connection, epoch_id, reservation_id
+            )
             existing = connection.execute(
                 "SELECT * FROM inference_reservations WHERE epoch_id = ? AND reservation_id = ?",
-                (epoch_id, reservation_id),
+                (epoch_id, storage_id),
             ).fetchone()
             if existing is not None:
                 requested = (calls, input_tokens, output_tokens)
@@ -174,7 +221,7 @@ class LocalStateStore:
                 "INSERT INTO inference_reservations "
                 "(epoch_id, reservation_id, reserved_calls, reserved_input_tokens, "
                 "reserved_output_tokens, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (epoch_id, reservation_id, calls, input_tokens, output_tokens, now),
+                (epoch_id, storage_id, calls, input_tokens, output_tokens, now),
             )
 
     def reconcile_inference(
@@ -187,9 +234,15 @@ class LocalStateStore:
     ) -> None:
         now = _utc_now()
         with self._transaction() as connection:
+            storage_id = self._reservation_storage_id(
+                connection,
+                epoch_id,
+                reservation_id,
+                legacy_fallback=True,
+            )
             row = connection.execute(
                 "SELECT * FROM inference_reservations WHERE epoch_id = ? AND reservation_id = ?",
-                (epoch_id, reservation_id),
+                (epoch_id, storage_id),
             ).fetchone()
             if row is None:
                 raise KeyError(f"inference reservation does not exist: {reservation_id}")
@@ -211,7 +264,7 @@ class LocalStateStore:
                 "UPDATE inference_reservations SET actual_calls = ?, actual_input_tokens = ?, "
                 "actual_output_tokens = ?, reconciled = 1, updated_at = ? "
                 "WHERE epoch_id = ? AND reservation_id = ?",
-                (calls, input_tokens, output_tokens, now, epoch_id, reservation_id),
+                (calls, input_tokens, output_tokens, now, epoch_id, storage_id),
             )
 
     def inference_usage(self, epoch_id: str) -> Dict[str, int]:
