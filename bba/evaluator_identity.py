@@ -32,6 +32,7 @@ BOUND_MODULES = (
     "pricing.py",
     "protocol.py",
     "quota.py",
+    "quota_project.py",
     "registry.py",
     "replay.py",
     "runtime.py",
