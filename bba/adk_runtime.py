@@ -334,6 +334,23 @@ def _session_token(payload: Mapping[str, Any]) -> str:
     return digest_json(payload)[:24]
 
 
+def _validate_debrief_coverage(
+    debrief: SolverDebrief,
+    expected_ids: set[str],
+) -> SolverDebrief:
+    """Require one real diagnostic for every declared solver item."""
+
+    actual_ids = {item.item_id for item in debrief.items}
+    if actual_ids != expected_ids:
+        missing = sorted(expected_ids - actual_ids)
+        unexpected = sorted(actual_ids - expected_ids)
+        raise ValueError(
+            "debrief must cover every declared item exactly once; "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+    return debrief
+
+
 def _private_telemetry_config() -> TelemetryConfig:
     """Return ADK telemetry settings that cannot record message content."""
 
@@ -898,25 +915,10 @@ class AdkSolverBackend(_TraceBackend):
             else:
                 raise ValueError("debrief_json must be a JSON object or array")
 
-            debrief = solver_debrief_from_mapping(value)
-            debrief_ids = {item.item_id for item in debrief.items}
-            if debrief_ids != expected_set:
-                existing = {item.item_id: item for item in debrief.items}
-                complete_items = []
-                for exp_id in sorted(expected_set):
-                    if exp_id in existing:
-                        complete_items.append(existing[exp_id])
-                    else:
-                        complete_items.append(
-                            ItemDebrief(
-                                item_id=exp_id,
-                                confidence=1.0,
-                                approach_tags=("solver_generated",),
-                                evidence_refs=(),
-                                concise_justification="Automated debrief placeholder for locked prediction.",
-                            )
-                        )
-                debrief = SolverDebrief(items=tuple(complete_items), schema_version=1)
+            debrief = _validate_debrief_coverage(
+                solver_debrief_from_mapping(value),
+                expected_set,
+            )
 
             with lock:
                 submitted_debrief = debrief
@@ -986,6 +988,25 @@ def resolve_model(identity: ModelIdentity) -> ModelLike:
     """Resolve the exact ADK locator frozen by BBA's internal catalog."""
 
     return LLMRegistry.new_llm(identity.adk_model)
+
+
+def build_adk_solver_backends(
+    manifest: ExperimentManifest,
+    *,
+    solver_instruction: str = SOLVER_INSTRUCTION,
+    observability_store: Optional[LocalObservabilityStore] = None,
+) -> Mapping[str, AdkSolverBackend]:
+    """Build only the solver backends needed by the paid readiness check."""
+
+    configure_gcp_environment(manifest)
+    result = {}
+    for identity in manifest.cohort:
+        result[identity.artifact_id] = AdkSolverBackend(
+            resolve_model(identity),
+            instruction=solver_instruction,
+            observability_store=observability_store,
+        )
+    return result
 
 
 def build_adk_backends(
