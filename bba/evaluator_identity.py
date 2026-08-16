@@ -29,6 +29,7 @@ BOUND_MODULES = (
     "runtime.py",
     "scoring.py",
     "state.py",
+    "_tournament.py",
     "tournament.py",
     "validator.py",
 )
