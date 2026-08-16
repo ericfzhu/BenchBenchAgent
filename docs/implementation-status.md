@@ -1,84 +1,87 @@
 # BBA implementation status
 
-This document records the implementation and verification state.
-It applies to BBA version `0.13.0` and protocol `bba.epoch.v8`.
-The [protocol specification](protocol.md) is the normative source.
-The [completion plan](implementation-plan.md) gives the work order and acceptance gates.
+This document records the implementation and verification state for BBA
+version `0.13.0` and protocol `bba.epoch.v8`. The
+[protocol specification](protocol.md) is normative. The
+[production acceptance record](production-acceptance.md) remains the release
+gate for a paid epoch.
 
 ## Status labels
 
 | Label | Meaning |
 | --- | --- |
 | `Implemented` | The code and deterministic local tests exist. |
-| `Partial` | Some required code or proof is not complete. |
-| `External proof required` | Local implementation exists, but paid or independent evidence does not exist. |
+| `Partial` | Some required code or target-host proof is incomplete. |
+| `External proof required` | Local implementation exists, but paid or independent evidence does not. |
 
 ## Implementation table
 
 | Item | Status | Current evidence |
 | --- | --- | --- |
-| 1. Sealed audit execution | `Implemented` | `SealedAuditRunner` opens committed material after closure, creates fresh instances, runs hidden solvers, tests five damage classes, derives both targets, publishes the metric vector, and retires the holdout. No audit score file is accepted. |
-| 2. Independent hidden solver panel | `Implemented` | Epoch setup commits distinct sealed-scaffold identities. Hidden cells use the same immutable attempt and trace contract as public cells. A later model family can replace a scaffold identity in a new catalog version. |
-| 3. Complete solver evidence | `Implemented` | Each success preserves locked predictions, a structured item debrief, two scorer reports, command diagnostics, file digests, and item results. Later creator rounds receive bounded correctness-annotated public debrief feedback. `bba evidence replay-cell` verifies the debrief and replays a score without inference. |
-| 4. Retry rules | `Implemented` | The protocol retries only timeout and provider error. It permits three immutable attempts and selects the first success. Fault-injection tests cover two failures followed by success. |
-| 5. Incomplete-panel ranking | `Implemented` | An incomplete or invalid row stays in the matrix and has `rank: null`. It does not enter solver aggregates. |
-| 6. Human promotion gate | `Implemented` | Promotion requires a typed, digest-bound independent solvability certificate and a separate human adjudicator. Human six-item reconstruction is one certificate type. Other types use independent evidence. Approval checks certificate adequacy, mechanical validity, panel completeness, final-round eligibility, construct validity, and escalation rules. Records use Ed25519. |
-| 7. Dependency isolation | `Implemented` | BBA accepts standard-library packages or exact hashed wheels from the local catalog. Installation uses local wheels with no dependency resolution. Validation stores environment digests. |
-| 8. Sandbox conformance | `Partial` | Ubuntu uses Bubblewrap namespaces. macOS uses Seatbelt. Both backends deny network and unrelated host paths. They use temporary home and temporary directories. CPU, memory, process, file, and wall limits fail closed. The same security suite tests both backends. The security suite must pass on the target Ubuntu host before this item can be `Implemented`. |
-| 9. Evaluator version binding | `Implemented` | The manifest stores a root digest and component digests for bound source, prompts, protocol, catalog, runtime, and installed controller packages. |
-| 10. Holdout retirement | `Implemented` | A cross-epoch append-only registry records committed, opened, and retired states. It rejects reused or retired commitments. |
-| 11. Live Vertex verification | `External proof required` | `bba epoch preflight` checks all routes with a small ADK tool call, usage metadata, global routing, behavior settings, and returned model metadata when available. No paid record exists in this repository. |
-| 12. Frozen model settings | `Implemented` | The catalog freezes temperature, top-p, scaffold identity, and a structured unsupported reasoning field. The ADK request plugin applies supported values and traces them. |
-| 13. Full production epoch | `External proof required` | The complete local fixture passes. A paid all-catalog epoch, controlled live interruption, and independent human reviews have not run. |
-| 14. Cost estimate and hard limits | `Partial` | BBA reports invocation and token ceilings. SQLite reservations enforce epoch call and token limits across retries and resume. A versioned price catalog fails visibly when an exact published price is absent. Current exact prices are not recorded. |
-| 15. Bounded concurrency | `Implemented` | `BoundedScheduler` runs public solver cells with deterministic work IDs, a global limit, and a per-publisher limit. Creator rounds, validation, and the public-to-hidden barrier remain ordered. Resume and retry tests run with this scheduler. |
-| 16. Continuous integration | `Removed` | BBA does not use GitHub Actions. Run tests, package checks, sandbox checks, and paid Vertex preflight from the local operator host. |
-| 17. Local operator console | `Implemented` | `bba web` binds to IPv4 loopback. It uses the existing CLI and controller contracts. It can queue epoch operations, record certificates and signed reviews, and show both rankings, the score matrix, and the audit vector. Host, origin, form-token, and confirmation checks protect local changes. |
-| 18. ADK observability | `Implemented` | A Google ADK plugin records redacted lifecycle, token-use, tool-use, latency, model-version, and error metadata. ADK message-content capture is off. The CLI and localhost console show local epoch summaries. Privacy, success, and failure tests use deterministic ADK models. |
-| 19. OpenTelemetry tracing | `Implemented` | BBA adds controller spans to native ADK spans and preserves context in parallel solver workers. Optional OTLP HTTP export accepts only a loopback endpoint. An export allowlist removes content, descriptions, events, links, and exception text. Export is off by default and cannot stop an epoch. |
+| Sealed audit execution | `Implemented` | `SealedAuditRunner` opens committed material after public closure, creates fresh instances, runs the hidden panel, tests five damage classes, derives both targets, publishes the metric vector, and retires the holdout. |
+| Independent hidden solver panel | `Implemented` | Epoch setup commits distinct sealed-scaffold identities. Hidden cells use the immutable attempt and trace contract used by public cells. |
+| Complete solver evidence | `Implemented` | Each success preserves locked predictions, a structured item debrief, candidate and controller scorer reports, command diagnostics, digests, and item-level results. Offline replay performs no inference. |
+| Retry and resume rules | `Implemented` | Timeout and provider failures create immutable solver attempts. Creator retries receive distinct inference reservations, so an interrupted or failed creator call cannot reuse a prior budget reservation. |
+| Incomplete-panel ranking | `Implemented` | An incomplete or invalid row remains visible with `rank: null` and does not enter solver aggregates. |
+| Human promotion gate | `Implemented` | Promotion requires a typed, digest-bound solvability certificate and a separate signed human adjudication. New human inputs are rejected as soon as the public audit population is frozen. |
+| Public-close recovery | `Implemented` | Re-running public close idempotently republishes every approved promotion to the canonical registry, including recovery after a process stops between evaluation publication and registry append. |
+| Dependency isolation | `Implemented` | BBA accepts standard-library packages or exact hashed wheels from the local catalog. The current wheel catalog is empty, so candidate packages are standard-library-only. |
+| Sandbox conformance | `Partial` | Ubuntu uses Bubblewrap and macOS uses Seatbelt. Public work, audit-population generation, and sealed audit require an available backend matching the frozen epoch manifest. The target Ubuntu security suite still must pass without skips. |
+| Evaluator version binding | `Implemented` | The manifest binds facade and implementation modules, GCP routing code, prompts, protocol, model and price catalogs, Python, and installed ADK/Auth/Vertex/LiteLLM/Pydantic distributions. |
+| Holdout retirement | `Implemented` | A cross-epoch append-only registry records committed, opened, and retired states and rejects reuse. |
+| Live Vertex verification | `External proof required` | Paid preflight checks every frozen route, tool contract, usage metadata, global routing, and returned model metadata when available. No paid record is committed to this repository. |
+| Frozen model settings | `Implemented` | The catalog freezes model routes, temperature, top-p, scaffold identity, and supported behavior metadata. |
+| Full production epoch | `External proof required` | The deterministic fixture lifecycle exists. A paid all-catalog epoch, controlled live interruptions, and independent reviews have not run. |
+| Cost estimate and hard limits | `Implemented` | A versioned price catalog covers every frozen route. Preflight checks a retry-inclusive estimate. SQLite reserves and reconciles calls, tokens, and a conservative USD estimate with a frozen 2× safety factor and hard epoch ceiling. Google Cloud budgets remain an independent operator control. |
+| Bounded concurrency | `Implemented` | `BoundedScheduler` enforces global and per-publisher limits while retaining deterministic work IDs and ordered barriers. |
+| Continuous integration | `Removed` | The project intentionally uses the target operator host for package, sandbox, unit, and paid preflight checks. The development portal can launch the local suite. |
+| Local development portal | `Implemented` | The localhost portal presents readiness checks, serialized diagnostics, a phase-aware epoch workflow, usage and cost status, failed work, candidate review, rankings, and observability. Review forms become read-only at audit freeze. |
+| ADK observability | `Implemented` | A Google ADK plugin records content-free lifecycle, token, tool, latency, model-version, and error metadata. |
+| OpenTelemetry tracing | `Implemented` | Optional loopback-only OTLP export uses an allowlist that removes prompts, responses, arguments, results, descriptions, events, links, and exception text. |
 
-## Local verification
+## Local verification coverage
 
-The local suite covers these flows:
+The local suite covers:
 
-- Protocol version and contract validation
-- Three creator rounds and round seed barriers
+- Protocol and manifest validation
+- Three creator rounds and post-design seed barriers
 - Immutable design and instance chains
-- Public solver matrix and rankings
-- Immutable retry attempts
+- Public solver matrices and rankings
+- Creator and solver retry accounting
 - Offline score replay
-- Ed25519 review gates
-- Local dependency environment identity
+- Ed25519 review gates and the review-freeze boundary
+- Crash-safe public-close publication
+- Local dependency identity
 - Evaluator and holdout registries
 - Automatic sealed audit and damage sensitivity
-- Public-optimizer selection gap
-- ADK sessions, tools, token limits, settings, and traces
-- Local interruption and resume
-- Preflight behavior with deterministic ADK models
-- Bounded scheduler and budget reservations
-- Local console request security, operation serialization, and result rendering
+- Sandbox backend binding
+- Price coverage and conservative USD limits
+- ADK sessions, tools, budgets, settings, and redacted traces
+- Interruption and resume
+- Preflight behavior with deterministic models
+- Local portal security, diagnostics, workflow rendering, and job serialization
 
-The Ubuntu security check needs Bubblewrap and requires the complete security suite to run.
-The macOS security check requires Seatbelt.
-A skipped security check is not sandbox proof.
-The Linux backend cannot run on the macOS development host.
-Use the result from the target Ubuntu host as the Linux conformance record.
+A skipped security test is not sandbox proof. The Linux conformance record must
+come from the Ubuntu target host with Bubblewrap available.
 
 ## Remaining acceptance work
 
-The following work cannot be completed with fixture models:
+The following requires the configured Google Cloud project or independent human
+participants:
 
-1. Run `bba epoch preflight` with the configured Google Cloud project.
-2. Confirm that every catalog model has access, accepted terms, quota, tool use, and usage metadata.
-3. Record returned model-version metadata where Vertex AI supplies it.
-4. Run one paid three-round epoch with all catalog models.
-5. Stop and resume the live epoch during creator, public solver, and hidden solver work.
-6. Obtain independent signed human reviews for promotion candidates.
-7. Run the automatic sealed audit and replay every successful live score.
-8. Publish the production acceptance report and evidence digests.
+1. Run the complete local suite on the target Ubuntu host without security-test skips.
+2. Run `bba epoch preflight` and confirm access, accepted terms, quota, function calling, usage metadata, and routing for every catalog model.
+3. Record provider model-version metadata where Vertex AI supplies it.
+4. Run one paid three-round epoch with the complete catalog.
+5. Stop and resume live creator, public-solver, and hidden-solver work.
+6. Obtain independent solvability certificates and signed human decisions.
+7. Freeze and publish the public evaluation, run the sealed audit, and replay every successful live attempt.
+8. Complete `docs/production-acceptance.md` with the resulting evidence digests.
 
 ## Completion rule
 
-BBA is not production-verified until the live preflight and full production acceptance run pass.
-Fixture success proves deterministic implementation behavior.
-It does not prove current model availability, quota, cost, or independent construct validity.
+BBA is not production-verified until the target-host security run, live
+preflight, full paid epoch, independent review, sealed audit, and replay checks
+all pass. Deterministic fixture success establishes implementation behavior; it
+does not establish current provider availability, quota, billing, or construct
+validity.
