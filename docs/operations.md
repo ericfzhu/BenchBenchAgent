@@ -1,76 +1,75 @@
 # BBA operations guide
 
-This guide tells an operator how to run one BBA epoch.
-Read the [protocol specification](protocol.md) before you run a paid epoch.
+This guide describes the current local workflow for BBA version `0.13.0` and protocol `bba.epoch.v8`. Read the [protocol specification](protocol.md) before running paid work.
 
 ## 1. System boundary
 
-BBA runs on one local machine.
-BBA uses local resources for these functions:
+BBA runs the controller locally. The operator machine owns:
 
-- The controller
-- SQLite workflow state
-- Evidence storage
-- Package generation workspaces
-- Sandbox execution
-- Validation and scoring
-- Review records
-- Rank and audit calculations
+- SQLite workflow and inference-budget state;
+- immutable evidence;
+- creator workspaces;
+- generated-code sandboxing;
+- validation and scoring;
+- review records and signature verification;
+- public ranking and sealed-audit calculations;
+- the localhost development portal.
 
-BBA uses Google Cloud only for serverless model inference.
-BBA does not deploy a model.
-BBA does not use a Google Cloud database, queue, storage bucket, or compute service.
+Google Cloud is used only for serverless model inference. BBA does not require Cloud Run, Cloud Storage, Firestore, Cloud Tasks, or deployed model endpoints.
 
-The operator must back up the local evidence root.
-The backup must keep file contents and directory names unchanged.
+Protect and back up the complete evidence root. Do not edit evidence files or the SQLite database by hand.
 
 ## 2. Required items
 
-Prepare these items:
+Prepare:
 
-- Python 3.10 or later
-- Google Cloud CLI
-- A Google Cloud project with billing
-- Vertex AI API access
-- Access to each model in the BBA serverless catalog
-- A supported local operating-system sandbox
-- Sufficient local disk space
-- An independent reviewer
+- Python 3.10 or later;
+- Google Cloud CLI;
+- a billed Google Cloud project;
+- Vertex AI API access;
+- Application Default Credentials;
+- accepted terms and quota for every model in the frozen BBA catalog;
+- Bubblewrap on Ubuntu or Seatbelt on macOS;
+- sufficient local disk space;
+- an independent certificate issuer and a separate human adjudicator for any benchmark you want to approve canonically.
 
-Google documents the current Vertex AI setup in the [Vertex AI quickstart](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/start/quickstart).
+The current candidate wheel catalog is empty. Creator packages must therefore use only the Python standard library and an empty or comment-only `requirements.lock`.
 
 ## 3. Install BBA
 
-On Ubuntu, install Bubblewrap:
+Ubuntu:
 
 ```bash
 sudo apt-get update
-sudo apt-get install bubblewrap
-```
+sudo apt-get install -y \
+  python3 \
+  python3-venv \
+  python3-pip \
+  bubblewrap \
+  apparmor \
+  apparmor-utils \
+  apparmor-profiles
 
-The Ubuntu kernel must permit Bubblewrap to make an unprivileged user namespace.
-BBA checks this function before it starts an epoch.
-
-Create a virtual environment and install BBA:
-
-```bash
-python3.10 -m venv .venv
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip setuptools wheel
 .venv/bin/pip install -e .
 ```
 
-Confirm the ADK version:
+Confirm the pinned ADK release:
 
 ```bash
 .venv/bin/python -c "import google.adk; print(google.adk.__version__)"
 ```
 
-The command must print `2.6.3`.
+It must print `2.6.3`.
 
-Run all tests:
+Run the complete local suite:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
 ```
+
+A skipped security test is not sandbox proof. On Ubuntu, the target-host run must exercise the Bubblewrap security tests rather than skip them.
 
 ## 4. Prepare Google Cloud
 
@@ -78,188 +77,126 @@ Select the project and enable Vertex AI:
 
 ```bash
 gcloud config set project PROJECT_ID
-gcloud services enable aiplatform.googleapis.com
+gcloud services enable aiplatform.googleapis.com --project=PROJECT_ID
 ```
 
-Give the local operator `roles/aiplatform.user` or a narrower custom role.
-Open each catalog model card in Model Garden.
-Accept the model terms when Google Cloud requests this action.
+Use a role that permits the required Vertex AI operations. Accept required Model Garden or partner-model terms and obtain sufficient quota for every frozen route before the paid preflight.
 
-BBA owns the catalog.
-The operator cannot add a self-deployed model to an epoch.
-Model availability, quota, price, and terms can change.
-Check the catalog before each epoch:
+The current catalog is BBA-owned. The operator cannot replace a frozen model route with a deployed endpoint or another provider.
+
+Inspect the catalog:
 
 ```bash
 .venv/bin/bba catalog
 ```
 
-## 5. Authenticate the local process
+## 5. Authenticate the Python process
 
-Create local Application Default Credentials:
+`gcloud auth login` alone is not enough. Create Application Default Credentials:
 
 ```bash
 gcloud auth application-default login
-```
-
-Set the ADC quota project:
-
-```bash
 gcloud auth application-default set-quota-project PROJECT_ID
+export GOOGLE_CLOUD_PROJECT=PROJECT_ID
 ```
 
-BBA gets the project from ADC.
-BBA sets the `global` location and the Google Cloud ADK mode.
-If ADC cannot find the project, set `GOOGLE_CLOUD_PROJECT`.
+BBA freezes the resolved project into the epoch. It propagates the project and `global` location to both native ADK adapters and LiteLLM Vertex routes.
 
-Do not put a credential file in the evidence root or a candidate workspace.
-Generated code cannot read the local credentials.
+Never place credential files in the evidence root, a candidate directory, or a generated-code workspace.
 
-## 6. Check the local sandbox
+## 6. Check local readiness
 
-Run this command:
+Check the generated-code boundary:
 
 ```bash
 .venv/bin/bba sandbox-status
 ```
 
-On Ubuntu, the result must show `linux-bubblewrap` and `available: true`.
-On macOS, the result must show `macos-seatbelt` and `available: true`.
-BBA stops before inference if the required sandbox is not available.
-Create and run one epoch on the same operating-system backend.
-The immutable manifest records this backend.
+On Ubuntu, `backend` and `expected_backend` must both be `linux-bubblewrap` and `available` must be `true`. On macOS, the equivalent backend is `macos-seatbelt`.
 
-The sandbox has no network access.
-The sandbox cannot read controller credentials, other candidates, or holdout files.
+The frozen backend is an epoch invariant. Public validation, audit-population generation, and sealed audit all require an available sandbox whose backend matches the manifest.
 
-## 7. BBA-owned epoch configuration
+For Ubuntu AppArmor troubleshooting and a full smoke checklist, see [Ubuntu and Google Cloud readiness](ubuntu-gcp-readiness.md).
 
-BBA contains one versioned serverless model catalog.
-The catalog contains the exact Google Cloud model ID, ADK route, model family, reasoning mode, and tool mode.
-The operator does not edit these values.
+## 7. Use the local development portal
 
-Catalog `gcp-serverless-2026-08-12` contains these models:
-
-- `gemini-3.6-flash`
-- `gemini-3.5-flash`
-- `gemini-3.5-flash-lite`
-- `gemini-3.1-pro-preview`
-- `claude-sonnet-5`
-- `claude-opus-5`
-- `claude-fable-5`
-- `claude-opus-4-8`
-- `claude-opus-4-7`
-- `claude-sonnet-4-6`
-- `claude-opus-4-6`
-- `grok-4.3`
-
-Gemini 3.1 Pro and Grok 4.3 are Preview models in this catalog version.
-Grok 4.3 uses fixed quota.
-
-BBA also owns these protocol values:
-
-- Resource limits
-- Decision limits
-- Prompt digests
-- Evaluator version
-- Sandbox requirements
-- Hidden commitment format
-
-An epoch manifest contains a frozen copy of these values.
-The manifest is evidence, not operator input.
-
-## 8. Automatic hidden commitments
-
-BBA creates the hidden solver configuration, hidden seeds, and audit policy before the first creator run.
-BBA stores this material in `private/holdout-plan.json` under the local epoch directory.
-BBA puts only the SHA-256 commitments in `manifest.json`.
-
-The creator and solver processes cannot read the private directory.
-Do not publish the private directory with public epoch evidence.
-Do not reveal its contents before public closure.
-
-## 9. Create the local epoch
-
-Use one evidence root for all local BBA data.
-The default root is `.bba`.
+The recommended development/operator interface is:
 
 ```bash
-.venv/bin/bba epoch create \
-  --evidence-root .bba
+.venv/bin/bba web --evidence-root .bba
 ```
 
-This command gets the project from ADC.
-It creates the epoch ID, hidden material, commitments, and manifest.
-It also creates the local SQLite state file.
-The command prints the epoch ID.
-
-Use `--epoch-id NAME` only when you need a specific local name.
-You cannot change the manifest or private material after this command.
-
-## 10. Use the localhost console
-
-The localhost console is the normal operator interface.
-It uses the same controller, state file, and evidence files as the CLI.
-
-Start the console:
-
-```bash
-.venv/bin/bba web \
-  --evidence-root .bba
-```
-
-Open this address:
+Open:
 
 ```text
 http://127.0.0.1:8765
 ```
 
-Use the Epochs page to create an epoch.
-Open the epoch page to start one of these operations:
+The workspace page shows:
 
-- Run the paid preflight.
-- Run or resume the public epoch.
-- Freeze the audit population.
-- Close the public epoch.
-- Run the sealed audit.
+- sandbox readiness;
+- ADC and selected project readiness;
+- price-catalog coverage;
+- dependency policy;
+- saved epochs and their phase/progress;
+- recent operations.
 
-The console runs one change operation at a time.
-The operation page shows the command result.
-The epoch page shows saved evidence counts and failed work.
-If the console stops, start it again.
-Then run or resume the same epoch.
+It can serialize these local diagnostics through the same one-operation queue used by epoch mutations:
 
-Open a final-round candidate to record solvability evidence.
-Enter one evidence file on each line in this form:
+- sandbox status;
+- catalog inspection;
+- the complete local unit-test suite.
 
-```text
-NAME=/absolute/path/to/file
+Each epoch page presents the workflow in order:
+
+1. setup;
+2. paid preflight;
+3. public tournament;
+4. human review;
+5. freeze audit inputs;
+6. publish public results;
+7. sealed audit.
+
+Controls that are invalid for the current phase are disabled. An active job disables other changes. Failed controller work is displayed with its work ID and saved error. The page also reports saved model-call usage and the conservative USD estimate against the frozen ceiling.
+
+Final-round candidate pages contain separate certificate and signed-decision forms. These forms become read-only when the audit population is frozen.
+
+The portal is localhost-only. It uses trusted-host, origin, form-token, frame-denial, and restrictive content-security checks. Do not expose it through a tunnel, proxy, container port, or non-loopback interface.
+
+See [Local development portal](development-portal.md).
+
+## 8. Create an epoch
+
+Use one evidence root for the complete lifecycle:
+
+```bash
+.venv/bin/bba epoch create --evidence-root .bba
 ```
 
-For a human reconstruction certificate, also give the absolute path to the answers JSON file.
-The page shows the six selected item IDs.
+Or provide a local filesystem-safe name:
 
-After a certificate exists, use the same candidate page to record the signed decision.
-Select all seven findings only when they are true.
-Approval fails if one finding is false.
-The approving reviewer must differ from the certificate issuer.
-Enter the absolute paths to the Ed25519 private and public key files.
-Keep the private key outside the evidence root.
+```bash
+.venv/bin/bba epoch create \
+  --epoch-id my-first-epoch \
+  --evidence-root .bba
+```
 
-After public closure, open the Results page.
-It shows the final creator ranking, solver ranking, and score matrix.
-After the sealed audit, it also shows the evaluator audit status.
+Epoch creation freezes:
 
-The console binds only to `127.0.0.1`.
-It has host, origin, form-token, and browser-frame checks.
-It does not have user accounts or remote access controls.
-Do not expose it through a proxy, tunnel, container port, or network interface.
+- the project and `global` location;
+- the complete source model cohort;
+- behavior settings;
+- the evaluator identity and installed routing/runtime versions;
+- resource and retry limits;
+- the conservative USD ceiling;
+- the local sandbox backend;
+- hidden commitments and sealed private material.
 
-Use `--port PORT` to select another local port.
+Do not edit the manifest or private holdout material after creation.
 
-## 11. Run or resume the public tournament with the CLI
+## 9. Run the paid preflight
 
-Run the small paid Vertex preflight first:
+Before public work:
 
 ```bash
 .venv/bin/bba epoch preflight \
@@ -267,12 +204,27 @@ Run the small paid Vertex preflight first:
   --evidence-root .bba
 ```
 
-The command checks every frozen model route and tool contract.
-It prints the frozen invocation and token limits.
-It prints a dollar estimate only when the local catalog has an exact published price for every route.
-It does not deploy an endpoint.
+Preflight checks every frozen model route for access, `global` routing, tool use, token-use metadata, and returned provider identity metadata when available. It does not deploy an endpoint.
 
-Then run this command:
+Preflight also verifies the local sandbox and the conservative retry-inclusive cost estimate. A complete price catalog is required; the estimate must not exceed `manifest.budget.max_estimated_cost_usd`.
+
+Failures are kept under `preflight-attempts/` for diagnosis. Only a complete passing run is frozen as:
+
+```text
+epochs/EPOCH_ID/preflight/vertex.json
+```
+
+`epoch run` requires that passing record to match the exact frozen manifest.
+
+For a traceback:
+
+```bash
+BBA_DEBUG=1 .venv/bin/bba epoch preflight \
+  --epoch-id EPOCH_ID \
+  --evidence-root .bba
+```
+
+## 10. Run or resume the public tournament
 
 ```bash
 .venv/bin/bba epoch run \
@@ -280,65 +232,69 @@ Then run this command:
   --evidence-root .bba
 ```
 
-The command does this work:
+The controller:
 
-1. It locks the local epoch.
-2. It restores complete evidence.
-3. It resets a work item that a prior process interrupted.
-4. It runs unfinished creator work through Vertex AI.
-5. It freezes all benchmark designs in the current round.
-6. It selects and freezes one round evaluation seed.
-7. It generates and freezes one evaluation instance from each design.
-8. It validates each new instance in the local sandbox.
-9. It runs unfinished solver cells through Vertex AI.
-10. It saves each result before it starts the next work item.
+1. acquires the epoch lock;
+2. restores immutable evidence and SQLite state;
+3. resets interrupted work;
+4. runs unfinished creator work;
+5. freezes all designs in the current round;
+6. selects the round seed only after all designs are frozen;
+7. materializes and validates evaluation instances;
+8. runs unfinished public solver cells;
+9. freezes attempt/cell evidence before marking work complete;
+10. advances to the next round.
 
-The creator does not receive the round seed.
-The round seed does not make the creator model deterministic.
-It makes each frozen generator reproduce the same evaluation instance.
+The current 12-model catalog plans 36 creator invocations. If every candidate validates, the public tournament contains 1,296 solver cells.
 
-You can stop the process between work items.
-If the process stops during one item, BBA starts that item again.
-Run the same command to resume.
+### Retry and budget behavior
 
-Do not start two `epoch run` processes for one epoch.
-The local lock rejects the second process.
+Each model attempt reserves:
 
-## 12. Inspect progress with the CLI
+- model calls;
+- input tokens;
+- output tokens;
+- a conservative USD amount.
 
-Show the phase and work counts:
+Reservations are transactional and frozen. Creator retries use a distinct reservation for each work-item attempt, so a failed or interrupted creator cannot reuse the prior attempt's allowance. Solver attempts already have unique attempt IDs.
+
+Only solver `timeout` and `provider_error` states are retryable, up to the frozen maximum attempt count. Parse, partial-prediction, scorer, invalid-bundle, and success states are not retried.
+
+The controller uses a frozen two-times cost safety factor for runtime reservations. It stops before a new reservation can exceed the epoch's call, token, or USD ceiling. Google Cloud budgets and alerts are still recommended as an independent external control.
+
+### Resume
+
+You may stop and rerun the same command. Completed immutable work is restored rather than repeated. An interrupted work item is reset and starts its next local attempt under the frozen budget rules.
+
+Do not run two mutation commands for the same epoch concurrently. The epoch lock rejects the second process.
+
+## 11. Inspect progress
 
 ```bash
-.venv/bin/bba epoch status \
-  --epoch-id EPOCH_ID \
-  --evidence-root .bba
+.venv/bin/bba epoch status --epoch-id EPOCH_ID --evidence-root .bba
+.venv/bin/bba epoch candidates --epoch-id EPOCH_ID --evidence-root .bba
+.venv/bin/bba epoch observability --epoch-id EPOCH_ID --evidence-root .bba
 ```
 
-Show all snapshots:
+The public tournament reaches `awaiting_review` when all required creator, validation, and public solver work is complete.
 
-```bash
-.venv/bin/bba epoch candidates \
-  --epoch-id EPOCH_ID \
-  --evidence-root .bba
-```
+A failed controller work item appears in `failed_work`. Correct the local/provider problem and rerun the appropriate command.
 
-The public run is complete when the phase is `awaiting_review`.
-A failed work item appears in `failed_work`.
-Correct the local or provider fault and run `epoch run` again.
+## 12. Certify solvability
 
-## 13. Certify solvability and record human adjudication with the CLI
+Only final-round snapshots can receive a canonical solvability certificate.
 
-Certify only final-round snapshots.
-Choose one certificate type:
+Supported certificate types:
 
-- `human_reconstruction`
-- `independent_reference`
-- `machine_verifiable_witness`
-- `trusted_external_source`
-- `independent_solver`
+- `human_reconstruction`;
+- `independent_reference`;
+- `machine_verifiable_witness`;
+- `trusted_external_source`;
+- `independent_solver`.
 
-The certificate issuer must not be the benchmark creator.
-For a human reconstruction certificate, get the controller-selected item IDs:
+The certificate issuer cannot be the benchmark creator.
+
+For human reconstruction, obtain the six controller-selected item IDs:
 
 ```bash
 .venv/bin/bba epoch certificate-items \
@@ -347,19 +303,7 @@ For a human reconstruction certificate, get the controller-selected item IDs:
   --evidence-root .bba
 ```
 
-The certificate issuer uses only the candidate's `solver_bundle` directory.
-The issuer reconstructs all six answers.
-Save the answers as one JSON object:
-
-```json
-{
-  "ITEM_ID_1": "ANSWER_1",
-  "ITEM_ID_2": "ANSWER_2"
-}
-```
-
-The real file must contain all six selected IDs.
-Freeze the human certificate and its working notes:
+Save all six reconstructed answers in one JSON object and record the certificate:
 
 ```bash
 .venv/bin/bba epoch record-certificate \
@@ -368,29 +312,18 @@ Freeze the human certificate and its working notes:
   --type human_reconstruction \
   --issuer-id CERTIFICATE_ISSUER_ID \
   --independence-basis "The issuer did not create this benchmark." \
-  --verification-method "Reconstructed all six selected answers from public material." \
+  --verification-method "Reconstructed all selected answers from public material." \
   --scope "Six controller-selected items." \
   --answers certificate-answers.json \
   --evidence working-notes.md=/protected/path/working-notes.md \
   --evidence-root .bba
 ```
 
-For a non-human certificate, omit `--answers` and supply one or more independent evidence files. For example:
+For non-human certificate types, omit `--answers` and supply one or more independent evidence files.
 
-```bash
-.venv/bin/bba epoch record-certificate \
-  --epoch-id EPOCH_ID \
-  --snapshot-id SNAPSHOT_ID \
-  --type independent_reference \
-  --issuer-id REFERENCE_OWNER_ID \
-  --independence-basis "The reference implementation was developed independently." \
-  --verification-method "Compared every frozen answer with the reference implementation." \
-  --scope "All 30 frozen items." \
-  --evidence report.json=/protected/path/reference-report.json \
-  --evidence-root .bba
-```
+## 13. Record signed human adjudication
 
-Save the seven adjudication findings as one JSON object:
+Save the seven required findings as JSON:
 
 ```json
 {
@@ -404,10 +337,7 @@ Save the seven adjudication findings as one JSON object:
 }
 ```
 
-Keep the Ed25519 private-key file outside the evidence root.
-The public-key file is not secret.
-
-Record the review:
+Record the decision:
 
 ```bash
 .venv/bin/bba epoch record-review \
@@ -424,18 +354,21 @@ Record the review:
   --evidence-root .bba
 ```
 
-The adjudicator must be different from the certificate issuer.
-An approval fails if one required finding is false.
-A human reconstruction certificate fails if one answer is incorrect.
-The command writes a signed epoch record and an append-only registry record.
+The approving reviewer must differ from the certificate issuer. Approval requires passed mechanical validation, a complete successful solver panel, an eligible final-round status, and all findings to pass.
+
+Keep the private signing key outside the evidence root.
+
+### Review freeze boundary
+
+The review window closes permanently when `epoch freeze-audit` successfully freezes the public audit population. After that point:
+
+- no new certificate can be recorded;
+- no new human decision can be recorded;
+- direct CLI/portal retries are rejected by the evidence/controller boundary before review-adjacent registry mutation.
+
+Complete all intended review work before freezing audit inputs.
 
 ## 14. Freeze the public audit population
-
-BBA builds the public evaluator profiles from stored evidence.
-BBA also builds the matched damage profiles and the public-optimizer control.
-The operator does not prepare a score file.
-
-Freeze these public values:
 
 ```bash
 .venv/bin/bba epoch freeze-audit \
@@ -443,11 +376,13 @@ Freeze these public values:
   --evidence-root .bba
 ```
 
-Do not reveal the holdout before this command and public closure are complete.
+This builds public evaluator profiles, matched damage profiles, and the public-optimizer control entirely from stored public evidence.
+
+The command requires an available sandbox whose backend matches the epoch manifest. This prevents a public epoch created under one isolation boundary from preparing audit inputs under another.
+
+Successful freeze closes the human review window.
 
 ## 15. Close the public epoch
-
-Run this command:
 
 ```bash
 .venv/bin/bba epoch close \
@@ -455,21 +390,13 @@ Run this command:
   --evidence-root .bba
 ```
 
-The command writes the matrix, candidate status, creator ranks, solver ranks, and adaptation values.
-It does not include hidden evidence.
-The phase becomes `public_closed`.
+The public record contains the matrix, candidate statuses, blind and final creator ranks, adaptation values, and solver rankings. Hidden evidence is not included.
+
+Approved promotions are appended to the canonical registry only after public closure. Closure is crash-safe: if the process stops after the public evaluation record is written but before canonical publication finishes, rerunning `epoch close` idempotently repairs the missing approved registry entries.
 
 ## 16. Run the sealed audit
 
-BBA can now open this file:
-
-```text
-.bba/epochs/EPOCH_ID/private/holdout-plan.json
-```
-
-The file matches all commitments in the manifest.
-
-Run the audit:
+After public closure:
 
 ```bash
 .venv/bin/bba epoch audit \
@@ -477,15 +404,36 @@ Run the audit:
   --evidence-root .bba
 ```
 
-Check the audit status and every component value.
-Do not use only the combined BBB value.
-BBA generates the fresh instances and runs the committed hidden panel.
-BBA derives both target vectors from stored evidence.
-BBA retires the revealed holdout after this command.
+The audit requires the same available sandbox backend frozen in the manifest.
 
-## 17. Local files
+BBA then:
 
-The evidence root has this layout:
+- opens and verifies the committed private material;
+- creates fresh hidden instances from committed seeds;
+- runs the committed hidden solver panel;
+- runs the controlled damage tests;
+- derives both target vectors from stored evidence;
+- publishes the complete audit vector and status;
+- retires the revealed holdout.
+
+Hidden debriefs never enter public creator feedback. Hidden results do not change already-frozen public rankings.
+
+## 17. Offline replay
+
+Replay any successful public or hidden solver attempt without a new model call:
+
+```bash
+.venv/bin/bba evidence replay-cell \
+  --epoch-id EPOCH_ID \
+  --attempt-id ATTEMPT_ID \
+  --evidence-root .bba
+```
+
+Replay verifies prediction, debrief, instance, and controller-score evidence before reporting success.
+
+## 18. Local evidence layout
+
+A typical evidence root contains:
 
 ```text
 bba-state.sqlite3
@@ -495,104 +443,53 @@ epochs/
     manifest.json
     private/
       holdout-plan.json
+    preflight/
+    preflight-attempts/
     candidates/
     round-seeds/
     instances/
     validations/
+    solver-attempts/
     solver-cells/
     agent-traces/
     observability/
-      invocations/
     solvability-certificates/
     promotions/
     evaluation/
     audit/
     state/
 registries/
+  reviewer-trust/
+  promotion-history/
   canonical-benchmarks/
 ```
 
-Do not edit an evidence file or the SQLite file.
-Do not put a signing key in this directory.
-Protect the evidence root because it contains sealed holdout material.
-Back up the complete directory after epoch creation, each public run, and each audit.
-Exclude `private/` when you publish public evidence.
+Do not modify these files manually. Exclude `private/` from any public evidence publication.
 
-## 18. Observe ADK agent work
+## 19. Observability and tracing
 
-BBA uses a Google ADK plugin to observe each creator and solver invocation.
-The plugin records call counts, tool names, token use, elapsed time, model
-versions, status, and error types. BBA saves the records in the local evidence
-root.
+BBA stores redacted ADK lifecycle records locally. They can contain model identity, call counts, tool names, token use, latency, provider model version, status, and error type. They must not contain prompts, tool arguments/results, model output, predictions, debrief text, private gold, or hidden audit content.
 
-Show the epoch summary:
-
-```bash
-.venv/bin/bba epoch observability \
-  --epoch-id EPOCH_ID \
-  --evidence-root .bba
-```
-
-Open the epoch in the localhost console and select **View agent activity** to
-see the same data.
-
-BBA tells ADK to capture no message content. Do not change this setting for a
-production epoch. The observability files must not contain prompts, tool
-arguments, tool results, model output, predictions, debrief text, private gold,
-or hidden audit content.
-
-If the local controller stops during an invocation, the next preflight, public
-run, or audit marks the stale activity record as `interrupted`.
-
-### Optional OpenTelemetry trace view
-
-BBA and Google ADK can send nested activity traces to a local OpenTelemetry
-Collector. Trace export is off by default. The local JSON observability records
-continue to work when trace export is off.
-
-Start an OTLP HTTP receiver on the local host. Then set this variable before
-you start the CLI or console:
+Optional OpenTelemetry export is loopback-only:
 
 ```bash
 export BBA_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318
 ```
 
-BBA adds `/v1/traces` when the endpoint has no path. BBA accepts only
-`localhost`, `127.0.0.1`, or `::1`. Do not put credentials in this value.
+Export failure does not stop an epoch and exported traces are not evidence or recovery state.
 
-The export filter permits operation names, BBA identifiers, model identities,
-tool names, counts, token use, finish reasons, elapsed times, and error types.
-It does not export ADK session or invocation IDs.
-It removes prompts, responses, tool arguments, tool results, descriptions,
-exception messages, stack traces, events, and links.
+## 20. Failure response
 
-An unavailable collector does not stop an epoch. OpenTelemetry data can be
-lost or sampled. Do not use it as epoch evidence or recovery state.
+After a failure:
 
-## 19. Failure response
+- keep all published evidence;
+- inspect `epoch status` and portal failed-work output;
+- correct the local/provider problem;
+- rerun the same operation;
+- never convert a non-success solver state to numeric zero;
+- never modify or delete prior immutable attempts;
+- never add human evidence after audit freeze;
+- never reveal holdout material before public closure;
+- never reuse retired holdout material.
 
-Use these rules after a failure:
-
-- Keep all published evidence.
-- Inspect `epoch status`.
-- Correct the local or provider fault.
-- Run the same command again.
-- Do not convert a timeout or provider error to a zero score.
-- Do not close an epoch with an incomplete solver panel.
-- Do not reveal hidden evidence before public closure.
-- Do not reuse revealed holdout material in another epoch.
-
-## 20. Cost controls
-
-BBA uses serverless model inference.
-It has no persistent model-serving charge.
-
-Use these controls:
-
-- Set a Google Cloud budget and alerts.
-- Set model quotas before the epoch.
-- Check local agent traces after a small test epoch.
-- Estimate the full epoch from measured token use.
-- Keep three solver repetitions for a conforming version 7 epoch.
-
-Local storage, local CPU work, and local backup have no Vertex AI inference charge.
+For development and target-host release gates, use [Implementation status](implementation-status.md) and [Production acceptance](production-acceptance.md).

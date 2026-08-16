@@ -1,14 +1,10 @@
 # Ubuntu and Google Cloud readiness
 
-Use this checklist before creating a paid BenchBenchAgent epoch on Ubuntu.
-The checks separate local installation, the generated-code sandbox, Application
-Default Credentials, and catalog model access so a failure identifies the
-correct subsystem.
+Use this checklist before creating paid BenchBenchAgent work on Ubuntu. It separates installation, generated-code sandboxing, Application Default Credentials, price coverage, and catalog model access so failures point to the correct subsystem.
 
 ## 1. Install the local runtime
 
-BBA supports Python 3.10 or later. Use the Ubuntu-provided `python3` unless a
-specific interpreter has been installed intentionally.
+BBA supports Python 3.10 or later. Use the Ubuntu-provided `python3` unless another interpreter was selected intentionally.
 
 ```bash
 sudo apt-get update
@@ -32,12 +28,11 @@ Confirm the pinned ADK release:
 .venv/bin/python -c "import google.adk; print(google.adk.__version__)"
 ```
 
-The command must print `2.6.3`.
+It must print `2.6.3`.
 
 ## 2. Authenticate the Python process
 
-`gcloud auth login` authenticates the Cloud SDK. BBA and its Python libraries
-use Application Default Credentials instead.
+`gcloud auth login` authenticates the Cloud SDK. BBA and its Python libraries use Application Default Credentials instead.
 
 ```bash
 PROJECT_ID="$(gcloud config get-value project 2>/dev/null)"
@@ -47,11 +42,10 @@ test "$PROJECT_ID" != "(unset)"
 
 gcloud auth application-default login
 gcloud auth application-default set-quota-project "$PROJECT_ID"
-
 export GOOGLE_CLOUD_PROJECT="$PROJECT_ID"
 ```
 
-On a machine without a browser, use:
+On a headless host:
 
 ```bash
 gcloud auth application-default login --no-launch-browser
@@ -74,26 +68,23 @@ if not project:
 PY
 ```
 
-BBA propagates the frozen project and location to both environment-variable
-families used by its model adapters:
+BBA propagates the frozen project/location to both adapter variable families:
 
-- `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`
-- `VERTEXAI_PROJECT` and `VERTEXAI_LOCATION`
+- `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`;
+- `VERTEXAI_PROJECT` and `VERTEXAI_LOCATION`.
 
-The frozen catalog currently requires the `global` Vertex location.
+The current catalog uses the Vertex `global` location.
 
-## 3. Enable Vertex AI
+## 3. Enable Vertex AI and partner access
 
 ```bash
 gcloud services enable aiplatform.googleapis.com \
   --project="$GOOGLE_CLOUD_PROJECT"
 ```
 
-The operator project must have billing, suitable Vertex AI permissions, and
-access to every model in the frozen catalog. Preview or partner models may have
-project-specific terms or quota requirements. BBA does not silently omit a
-model: the paid preflight records a result for every catalog identity and fails
-until the complete panel passes.
+The project must have billing, suitable Vertex AI permissions, accepted terms, and sufficient quota for every frozen model route. Preview and partner models can have additional project-specific access requirements.
+
+BBA never silently drops an unavailable route. Paid preflight returns a result for every frozen identity and fails until the complete panel passes.
 
 ## 4. Verify Bubblewrap
 
@@ -101,7 +92,7 @@ until the complete panel passes.
 .venv/bin/bba sandbox-status
 ```
 
-On Ubuntu the result must contain:
+On Ubuntu the result must include:
 
 ```json
 {
@@ -111,8 +102,7 @@ On Ubuntu the result must contain:
 }
 ```
 
-If Bubblewrap is installed but the namespace probe fails, inspect AppArmor and
-kernel messages:
+If Bubblewrap is installed but namespaces fail, inspect AppArmor and kernel messages:
 
 ```bash
 sudo journalctl -k -b | \
@@ -120,7 +110,7 @@ sudo journalctl -k -b | \
   tail -n 100
 ```
 
-On Ubuntu releases that ship the extra Bubblewrap profile, load it with:
+On Ubuntu releases that ship the extra Bubblewrap profile:
 
 ```bash
 if [ -f /usr/share/apparmor/extra-profiles/bwrap-userns-restrict ] && \
@@ -135,8 +125,9 @@ if [ -f /etc/apparmor.d/bwrap-userns-restrict ]; then
 fi
 ```
 
-Do not globally disable the host's unprivileged-user-namespace protections as a
-first response. BBA relies on the sandbox failing closed.
+Do not globally disable unprivileged-user-namespace protections as a first response. BBA relies on the sandbox failing closed.
+
+The sandbox backend becomes part of the immutable epoch manifest. Public validation, audit-population generation, and sealed audit all require an available backend matching that frozen value.
 
 ## 5. Run local checks
 
@@ -147,14 +138,38 @@ first response. BBA relies on the sandbox failing closed.
   -v
 ```
 
-A skipped security suite is not Ubuntu sandbox evidence. Confirm that the
-security tests actually ran on the target host.
+A skipped security suite is not Ubuntu sandbox evidence. Confirm the target-host security tests actually run.
 
-The committed generated-code wheel catalog is empty. Candidate packages must
-therefore use the Python standard library and an empty or comment-only
-`requirements.lock` until approved wheels are added to the catalog.
+The generated-code wheel catalog is currently empty. Candidate packages must use the Python standard library and an empty or comment-only `requirements.lock` until approved wheels are added.
 
-## 6. Create and preflight a smoke epoch
+## 6. Check the local development portal
+
+Start the portal:
+
+```bash
+.venv/bin/bba web --evidence-root .bba
+```
+
+Open `http://127.0.0.1:8765`.
+
+Before paid work, the workspace readiness panel should report ready for:
+
+- sandbox;
+- ADC/project;
+- frozen price coverage;
+- candidate dependency policy.
+
+The portal can also serialize the sandbox check, catalog inspection, and complete local unit suite through its local operation queue.
+
+## 7. Verify price coverage and cost limits
+
+The current price catalog must contain every frozen public route. BBA uses the catalog for a retry-inclusive preflight estimate and for runtime conservative USD reservations.
+
+Runtime reservations apply a frozen two-times safety factor and stop before a new model attempt can exceed the epoch's `max_estimated_cost_usd` ceiling. Calls and input/output tokens are enforced independently.
+
+Use Google Cloud budgets and alerts as a second, external cost control; BBA's local accounting is not a replacement for billing alerts.
+
+## 8. Create and preflight a smoke epoch
 
 ```bash
 EPOCH_ID="smoke-$(date -u +%Y%m%dT%H%M%SZ)"
@@ -168,12 +183,9 @@ EPOCH_ID="smoke-$(date -u +%Y%m%dT%H%M%SZ)"
   --evidence-root .bba
 ```
 
-Preflight failures are saved under `preflight-attempts/` so the operator can
-correct access, quota, credentials, or local configuration and retry. Only a
-complete passing result is frozen as `preflight/vertex.json`; `epoch run`
-requires that passing record to match the frozen manifest.
+Preflight failures are saved under `preflight-attempts/` so access, quota, credentials, or local configuration can be corrected and retried. Only a complete passing result is frozen as `preflight/vertex.json`, and `epoch run` requires that passing record to match the manifest.
 
-For a full traceback during diagnosis:
+For a full traceback:
 
 ```bash
 BBA_DEBUG=1 .venv/bin/bba epoch preflight \
@@ -181,6 +193,16 @@ BBA_DEBUG=1 .venv/bin/bba epoch preflight \
   --evidence-root .bba
 ```
 
-Do not start the full tournament until the sandbox, tests, and every catalog
-preflight entry pass and the operator has reviewed the invocation and token
-limits.
+Do not start the full tournament until:
+
+- Bubblewrap and the target-host security suite pass;
+- portal/local readiness is green;
+- every catalog route passes paid preflight;
+- the retry-inclusive cost estimate is below the frozen hard ceiling;
+- the operator has reviewed Google Cloud quotas and billing alerts.
+
+## 9. Production verification remains separate
+
+A successful smoke preflight does not make the repository production-verified. Production acceptance still requires a complete paid epoch, controlled creator/public-solver/hidden-solver interruption and resume, independent signed human review, public closure, sealed audit, and replay of every successful live attempt.
+
+See [Production acceptance](production-acceptance.md).

@@ -1,166 +1,122 @@
 # BenchBenchAgent
 
-BenchBenchAgent (BBA) tests models that make and solve executable benchmarks.
-Each model has two separate roles.
+BenchBenchAgent (BBA) runs two-sided benchmark tournaments in which the same frozen model cohort acts as benchmark creators and blind solvers.
 
-- A creator makes a benchmark design and deterministic generator.
-- BBA freezes the design and then selects an evaluation seed.
-- A solver solves the generated evaluation instance.
+- Creators build executable benchmark designs and deterministic generators.
+- BBA freezes every design in a round before selecting that round's evaluation seed.
+- Solvers receive only the generated `solver_bundle` and submit locked predictions plus a structured item debrief.
+- BBA publishes a creator-by-solver matrix, creator rankings, solver rankings, immutable evidence, and a sealed evaluator audit.
+- Independent solvability evidence and a separate signed human decision are required before a final-round benchmark becomes canonical.
 
-BBA makes a creator-by-solver score matrix.
-BBA also makes separate creator and solver ranks.
-Independent evidence must certify solvability. A separate human reviewer must approve the certificate and benchmark before BBA adds it to the canonical registry.
-A sealed audit tests the public evaluator after the public epoch is closed.
-Version `0.13.0` also includes a localhost operator console and redacted ADK observability.
-The console controls the same local controller and evidence as the CLI.
-Paid Vertex and full production acceptance evidence are still required.
-See the [implementation status](docs/implementation-status.md) before you run a production epoch.
+BBA is a local-first application. Google Cloud is used only for serverless model inference through Google ADK and Vertex AI. Controller state, immutable evidence, validation, scoring, generated-code sandboxing, review records, ranking, and audit calculations stay on the operator's machine.
 
-BBA uses the method from Rohit Krishnan's [BenchBench](https://www.strangeloopcanon.com/p/introducing-benchbench).
-BBA uses the sealed evaluator audit from Ethan Mollick's [BenchBenchBench](https://github.com/emollick/benchbenchbench).
+Version `0.13.0` includes a localhost development portal, redacted ADK observability, retry-safe call/token/cost accounting, review-freeze enforcement, crash-safe public-close recovery, and a sealed-audit sandbox bound to the frozen epoch backend.
 
-## Operating model
+Paid Vertex and independent production-acceptance evidence are still required. See [implementation status](docs/implementation-status.md) and [production acceptance](docs/production-acceptance.md).
 
-BBA is a local application.
-It keeps these functions on the operator's machine:
+## Requirements
 
-- Epoch control and recovery
-- SQLite workflow state
-- Immutable evidence files
-- Package validation and scoring
-- Generated-code sandbox execution
-- Human review records
-- Public ranks and holdout audit calculations
+- Python 3.10 or later
+- Google Cloud CLI
+- A billed Google Cloud project with Vertex AI enabled
+- Application Default Credentials (ADC)
+- Access, accepted terms, and quota for every model in the frozen catalog
+- Bubblewrap on Ubuntu Linux or Seatbelt on macOS
 
-BBA uses Google Cloud only for serverless model inference.
-It does not use Cloud Run, Cloud Storage, Firestore, Cloud Tasks, or a deployed model endpoint.
-Google Python Agent Development Kit (ADK) 2.6.3 controls each model session.
+The current generated-code wheel catalog is empty, so creator packages must use the Python standard library and an empty or comment-only `requirements.lock`.
 
-BBA owns the model cohort and all model routes.
-The operator does not supply a manifest, model ID, provider, or location.
-BBA uses a versioned source catalog and the Google Cloud `global` location.
-An epoch stores a complete copy of this catalog in its immutable manifest.
-
-BBA supports local execution on Ubuntu Linux and macOS.
-Ubuntu uses Bubblewrap namespaces.
-macOS uses Seatbelt.
-The local sandbox must stop network access and host file access for generated code.
-BBA stops if the sandbox is not available.
-
-## Saved state and resume
-
-BBA saves progress after each creator run, validation, and solver cell.
-It stores workflow state in `.bba/bba-state.sqlite3` by default.
-It stores immutable evidence in `.bba/epochs/EPOCH_ID/`.
-
-If the process stops, run the same `epoch run` command again.
-BBA finds complete evidence and does not repeat that work.
-BBA resets an interrupted work item and starts that item again.
-A local file lock prevents two processes from changing one epoch at the same time.
-
-## Install
-
-Use Python 3.10 or later. On Ubuntu, use the installed `python3` unless a
-specific interpreter was selected intentionally.
-
-Install Bubblewrap and the local Python runtime:
+## Install on Ubuntu
 
 ```bash
 sudo apt-get update
-sudo apt-get install -y python3 python3-venv bubblewrap
+sudo apt-get install -y \
+  python3 \
+  python3-venv \
+  python3-pip \
+  bubblewrap \
+  apparmor \
+  apparmor-utils \
+  apparmor-profiles
 
 python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip setuptools wheel
 .venv/bin/pip install -e .
 ```
 
-The Ubuntu kernel and AppArmor policy must permit Bubblewrap to make an
-unprivileged user namespace. See the
-[Ubuntu and Google Cloud readiness guide](docs/ubuntu-gcp-readiness.md) for
-Ubuntu 24.04 troubleshooting and the complete smoke-test sequence.
+Ubuntu must permit Bubblewrap to create the required namespaces. See [Ubuntu and Google Cloud readiness](docs/ubuntu-gcp-readiness.md) for AppArmor troubleshooting.
 
-Run the tests:
+Run the local suite and sandbox check:
 
 ```bash
 .venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
-```
-
-Check the local sandbox:
-
-```bash
 .venv/bin/bba sandbox-status
 ```
 
+A skipped security test is not target-host sandbox proof.
+
 ## Google Cloud setup
 
-Enable Vertex AI and create local Application Default Credentials.
-`gcloud auth login` alone does not authenticate the Python client libraries.
+`gcloud auth login` authenticates the Cloud SDK. BBA's Python libraries use Application Default Credentials instead.
 
 ```bash
 gcloud config set project PROJECT_ID
-gcloud services enable aiplatform.googleapis.com
+gcloud services enable aiplatform.googleapis.com --project=PROJECT_ID
 gcloud auth application-default login
 gcloud auth application-default set-quota-project PROJECT_ID
 export GOOGLE_CLOUD_PROJECT=PROJECT_ID
 ```
 
-Accept the Model Garden terms and obtain quota for every model in the BBA
-catalog. BBA propagates the frozen project and `global` location to the native
-Google/Anthropic adapters and the LiteLLM Vertex adapter. The paid preflight
-reports every catalog route and returns a nonzero status until all routes pass.
+BBA freezes the project into the epoch and propagates it to both native Google/Anthropic adapters and LiteLLM Vertex routes. The current catalog uses the Vertex `global` location.
 
-Show the catalog:
+Show the frozen source catalog:
 
 ```bash
 .venv/bin/bba catalog
 ```
 
-## Run an epoch
+## Local development portal
 
-You can use the CLI or the localhost console.
-Both interfaces use the same saved state and immutable evidence.
-
-Start the console:
+The recommended local interface is the development portal:
 
 ```bash
-.venv/bin/bba web \
+.venv/bin/bba web --evidence-root .bba
+```
+
+Open `http://127.0.0.1:8765`.
+
+The workspace shows:
+
+- sandbox, ADC/project, price-catalog, and dependency-policy readiness;
+- serialized buttons for the sandbox check, catalog check, and complete local unit suite;
+- saved epochs and recent operations;
+- phase-aware epoch controls;
+- failed work and saved error messages;
+- model-call usage and conservative USD usage against the frozen ceiling;
+- candidate review, rankings, and redacted ADK activity.
+
+The portal binds only to IPv4 loopback, enforces host/origin/form-token checks, denies framing, and runs one change operation at a time. Do not expose it through a tunnel, proxy, container port, or non-loopback interface.
+
+See [Local development portal](docs/development-portal.md).
+
+## CLI workflow
+
+Create an epoch:
+
+```bash
+.venv/bin/bba epoch create --evidence-root .bba
+```
+
+The manifest freezes the model catalog, project, global location, evaluator identity, sandbox backend, budgets, retry policy, and sealed commitments.
+
+Run the paid preflight before public work:
+
+```bash
+.venv/bin/bba epoch preflight \
+  --epoch-id EPOCH_ID \
   --evidence-root .bba
 ```
 
-Open `http://127.0.0.1:8765` in a browser.
-The console can create an epoch, run the paid preflight, run or resume public work, and show saved progress.
-It can also record solvability evidence and a signed candidate decision.
-After public closure, it shows the creator ranking, solver ranking, and creator-by-solver matrix.
-After the sealed audit, it also shows the evaluator audit status.
-
-The console binds only to `127.0.0.1`.
-It rejects requests from other hosts and origins.
-It runs one change operation at a time.
-Paid and irreversible operations require a confirmation in the page.
-Do not use a port proxy or expose this console to a network.
-
-See the [operations guide](docs/operations.md#10-use-the-localhost-console) for the complete console workflow.
-
-## Run an epoch with the CLI
-
-Create the local epoch:
-
-```bash
-.venv/bin/bba epoch create \
-  --evidence-root .bba
-```
-
-BBA gets the project from ADC.
-BBA creates the epoch ID, hidden seeds, audit commitments, and immutable manifest.
-The command prints the new epoch ID.
-
-You can supply a readable local ID if required:
-
-```bash
-.venv/bin/bba epoch create \
-  --epoch-id my-first-epoch \
-  --evidence-root .bba
-```
+Preflight checks every catalog route and requires a complete passing record for the exact manifest. It also checks the conservative retry-inclusive USD estimate against the frozen hard ceiling. Failed attempts remain diagnostic evidence; only a complete pass becomes `preflight/vertex.json`.
 
 Run or resume the public tournament:
 
@@ -170,36 +126,40 @@ Run or resume the public tournament:
   --evidence-root .bba
 ```
 
-Inspect saved progress at any time:
+The current 12-model, three-round cohort plans 36 creator invocations and, when all designs validate, 1,296 public solver cells. The sealed audit can later add 432 hidden solver cells on eligible final-round snapshots.
+
+BBA reserves calls, input tokens, output tokens, and a conservative USD amount before each model attempt. Creator retries use distinct reservations. Timeout and provider failures are the only retryable solver states; immutable attempts are never overwritten.
+
+Inspect progress:
 
 ```bash
-.venv/bin/bba epoch status \
-  --epoch-id EPOCH_ID \
-  --evidence-root .bba
+.venv/bin/bba epoch status --epoch-id EPOCH_ID --evidence-root .bba
+.venv/bin/bba epoch candidates --epoch-id EPOCH_ID --evidence-root .bba
+.venv/bin/bba epoch observability --epoch-id EPOCH_ID --evidence-root .bba
 ```
 
-The public run has three creator rounds.
-Each cohort model creates one benchmark snapshot in each round.
-Each valid snapshot receives three runs from every public solver.
-With the current 12-model cohort, the planned public run has 36 creator
-invocations and 1,296 solver cells if all designs pass validation.
-The sealed audit later adds 432 hidden solver cells on final-round snapshots.
-It validates the evaluator and does not change the frozen public ranks.
-Every successful solver cell locks its predictions and then submits a structured debrief.
-The next creator round receives a bounded public feedback report with correctness labels.
-In each round, BBA freezes all creator designs before it selects the round seed.
-BBA does not give the seed to a creator.
-BBA uses the seed to generate and freeze one evaluation instance from each design.
-Each valid snapshot receives the full blind solver panel.
-The command ends when all required public evidence exists.
+When public work reaches `awaiting_review`, final-round candidates can receive independent solvability certificates and signed decisions. The review window closes permanently when the public audit population is frozen. Late certificate or review requests are rejected before any review-adjacent registry mutation occurs.
 
-Human review, public closure, and holdout audit use separate commands.
-This separation keeps hidden evidence outside the creator feedback loop.
-See the [operations guide](docs/operations.md) for the complete command sequence and input file formats.
+Freeze public audit inputs, then close public results:
+
+```bash
+.venv/bin/bba epoch freeze-audit --epoch-id EPOCH_ID --evidence-root .bba
+.venv/bin/bba epoch close --epoch-id EPOCH_ID --evidence-root .bba
+```
+
+The same available sandbox backend frozen in the manifest is required for audit-population generation and the sealed audit. Public closure is restart-safe: rerunning it repairs any approved canonical-promotion publication that was interrupted after the public evaluation record was written.
+
+After public closure, run the sealed audit:
+
+```bash
+.venv/bin/bba epoch audit --epoch-id EPOCH_ID --evidence-root .bba
+```
+
+Hidden material opens only after public closure, hidden solver results do not alter the frozen public rankings, and revealed holdout material is retired after audit.
 
 ## Candidate package check
 
-Use this command to validate one package:
+Validate an executable candidate locally:
 
 ```bash
 .venv/bin/bba verify-package \
@@ -207,73 +167,37 @@ Use this command to validate one package:
   --seed 20260812
 ```
 
-The command returns a nonzero status if the package is not valid.
+Generated candidate code runs in the credential-free operating-system sandbox. BBA independently recomputes exact-match scoring and compares it with the candidate scorer.
 
-## Main outputs
+## Saved state and evidence
 
-BBA stores these outputs:
+BBA stores workflow state in `.bba/bba-state.sqlite3` and immutable epoch evidence under `.bba/epochs/EPOCH_ID/` by default.
 
-- Immutable benchmark-design snapshots and revision links
-- Controller-selected round seeds
-- Immutable generated evaluation instances
-- Validation records
-- Tagged solver-cell records
-- Immutable solver-attempt artifacts and replay reports
-- Creator and solver ranks
-- Signed promotion records
-- Typed, digest-bound solvability certificates
-- Public evaluation records
-- Holdout audit records
-- Redacted local ADK activity, token-use, latency, tool-use, and error records
-- An append-only benchmark registry
+If a process stops, rerun the same command. Completed immutable evidence is restored; interrupted work is reset under the frozen retry and budget rules. A local file lock prevents two processes from mutating the same epoch concurrently.
 
-Non-success solver states do not contain a numeric score.
-A timeout or provider error is not a zero score.
+Successful solver attempts preserve predictions, structured debriefs, candidate and controller scorer reports, command diagnostics, digests, and per-item results. `bba evidence replay-cell` can replay a successful public or hidden score without inference.
 
-## Agent observability
+## Observability
 
-BBA observes each creator and solver invocation through a Google ADK plugin.
-It records the ADK lifecycle, model-call count, tool names, token use, latency,
-model version, and error type. It stores these records in the local evidence
-root.
+BBA records content-free ADK lifecycle metadata: model identity, call count, tool names, token counts, latency, model version, status, and error type. It does not record prompts, tool arguments, tool results, model output, predictions, debrief text, private gold, or hidden audit content.
 
-BBA configures ADK to capture no message content. The operator records do not
-contain prompts, tool arguments, tool results, model output, predictions,
-debrief text, private gold, or hidden audit content.
-
-Show the current summary:
-
-```bash
-.venv/bin/bba epoch observability \
-  --epoch-id EPOCH_ID \
-  --evidence-root .bba
-```
-
-The localhost console also shows an **Agent activity** page for each epoch.
-
-### Optional OpenTelemetry traces
-
-BBA and Google ADK can send privacy-filtered traces to an OpenTelemetry
-Collector on the local host. Trace export is off by default.
-
-Set the local OTLP HTTP endpoint before you start BBA:
+Optional OpenTelemetry export is loopback-only and off by default:
 
 ```bash
 export BBA_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318
 ```
 
-BBA adds `/v1/traces` when the endpoint has no path. BBA rejects a remote
-endpoint. The collector can be absent or unavailable without stopping an epoch.
-Trace export does not replace local evidence, restart state, or ranking data.
+Trace export is operational telemetry, not immutable epoch evidence or recovery state.
 
 ## Documents
 
-- [Protocol specification](docs/protocol.md): Required rules for one epoch.
-- [Operations guide](docs/operations.md): Local setup, commands, recovery, review, and audit.
-- [Ubuntu and Google Cloud readiness](docs/ubuntu-gcp-readiness.md): ADC, Bubblewrap, AppArmor, and paid preflight checks.
-- [Implementation status](docs/implementation-status.md): Known incomplete work and completion conditions.
-- [Completion plan](docs/implementation-plan.md): Work order, protocol decisions, tests, and exit gates.
-- [Production acceptance](docs/production-acceptance.md): Required paid and independent evidence for release verification.
+- [Protocol specification](docs/protocol.md) — normative rules for an epoch.
+- [Operations guide](docs/operations.md) — complete local workflow and command formats.
+- [Local development portal](docs/development-portal.md) — browser workspace and diagnostics.
+- [Ubuntu and Google Cloud readiness](docs/ubuntu-gcp-readiness.md) — ADC, Bubblewrap, AppArmor, and paid preflight checks.
+- [Implementation status](docs/implementation-status.md) — implemented behavior and remaining external proof.
+- [Completion plan](docs/implementation-plan.md) — historical implementation work plan and exit gates.
+- [Production acceptance](docs/production-acceptance.md) — evidence required before production verification.
 
 ## Main Python interfaces
 
@@ -281,11 +205,11 @@ Trace export does not replace local evidence, restart state, or ranking data.
 | --- | --- |
 | `ExperimentManifest` | Stores the frozen epoch configuration. |
 | `TournamentController` | Controls restore, public work, review, closure, and audit. |
-| `LocalStateStore` | Stores transactional local workflow state. |
-| `EvidenceStore` | Stores immutable local evidence. |
+| `LocalStateStore` | Stores transactional workflow and inference-budget state. |
+| `EvidenceStore` | Stores immutable local evidence and review-freeze markers. |
 | `AdkCreatorBackend` | Runs one creator with ADK and Vertex AI. |
 | `AdkSolverBackend` | Runs one solver with ADK and Vertex AI. |
-| `PackageValidator` | Checks a benchmark design and its generated instance. |
-| `SecureSandbox` | Runs generated code in a local operating-system sandbox. |
-| `PromotionRegistry` | Stores signed promotion records. |
+| `PackageValidator` | Validates generated benchmarks and scorer behavior. |
+| `SecureSandbox` | Runs generated code inside the frozen local OS boundary. |
+| `PromotionRegistry` | Stores and verifies signed promotion records. |
 | `SealedAuditRunner` | Runs the committed hidden experiment and damage tests. |
