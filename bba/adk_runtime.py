@@ -10,7 +10,7 @@ from google.genai import types
 
 from bba import _adk_runtime as _core
 from bba._adk_runtime import *  # noqa: F401,F403
-from bba.quota_project import QuotaGovernor
+from bba.quota_project import ModelCallQuotaLease, QuotaGovernor
 
 
 CREATOR_DEPENDENCY_POLICY = """The approved candidate dependency catalog is empty.
@@ -86,7 +86,7 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
             if store is not None
             else None
         )
-        self._quota_lease: str | None = None
+        self._quota_lease: ModelCallQuotaLease | None = None
 
     async def before_model_callback(self, *, callback_context, llm_request):
         remaining = self.token_budget - self.total_tokens
@@ -108,23 +108,24 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
                 setattr(llm_request.config, name, value)
 
         if self._quota_governor is not None:
+            if self._quota_lease is not None:
+                raise RuntimeError(
+                    "the previous model quota lease was not reconciled"
+                )
             estimated_input = self._quota_governor.estimate_input_tokens(
                 llm_request
             )
             requested_output = int(
                 llm_request.config.max_output_tokens or remaining
             )
-            output_cap = self._quota_governor.output_cap(
-                self.identity,
-                requested_output,
-            )
-            llm_request.config.max_output_tokens = output_cap
-            self._quota_lease = await asyncio.to_thread(
-                self._quota_governor.acquire,
+            lease = await asyncio.to_thread(
+                self._quota_governor.acquire_model_call,
                 self.identity,
                 estimated_input,
-                output_cap,
+                requested_output,
             )
+            llm_request.config.max_output_tokens = lease.output_cap
+            self._quota_lease = lease
 
         # Quota waiting is infrastructure time, not model latency.
         self.model_calls += 1
@@ -150,7 +151,7 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
                 self._quota_lease = None
                 await asyncio.to_thread(
                     self._quota_governor.reconcile,
-                    lease,
+                    lease.lease_id,
                     input_tokens,
                     output_tokens,
                 )
@@ -167,7 +168,7 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
             self._quota_lease = None
             await asyncio.to_thread(
                 self._quota_governor.fail,
-                lease,
+                lease.lease_id,
                 error,
             )
         return await super().on_model_error_callback(
@@ -177,13 +178,16 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
         )
 
     def finish(self, status: str, error: BaseException | None) -> None:
-        if (
-            error is not None
-            and self._quota_governor is not None
-            and self._quota_lease
-        ):
-            self._quota_governor.fail(self._quota_lease, error)
+        if self._quota_governor is not None and self._quota_lease:
+            lease = self._quota_lease
             self._quota_lease = None
+            self._quota_governor.fail(
+                lease.lease_id,
+                error
+                or RuntimeError(
+                    "model call ended before quota usage was reconciled"
+                ),
+            )
         super().finish(status, error)
 
 
