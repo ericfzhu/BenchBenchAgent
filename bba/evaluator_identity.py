@@ -12,6 +12,7 @@ from bba.protocol import digest_json
 
 
 BOUND_MODULES = (
+    "_adk_runtime.py",
     "adk_runtime.py",
     "audit.py",
     "_audit_runner.py",
@@ -26,9 +27,11 @@ BOUND_MODULES = (
     "gcp.py",
     "holdouts.py",
     "_preflight.py",
+    "_preflight_cost.py",
     "preflight.py",
     "pricing.py",
     "protocol.py",
+    "quota.py",
     "registry.py",
     "replay.py",
     "runtime.py",
