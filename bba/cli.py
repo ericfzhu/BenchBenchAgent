@@ -4,42 +4,47 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
-from bba.adk_runtime import build_adk_backends, build_hidden_solver_backends
-from bba.audit_runner import SealedAuditRunner, build_public_audit_population
-from bba.budget import estimate_epoch
-from bba.catalog import catalog_summary
-from bba.evidence import EvidenceStore, read_json, tree_digest
-from bba.epoch_setup import create_experiment_manifest, new_epoch_id
-from bba.gcp import discover_gcp_project
-from bba.holdouts import HoldoutRegistry
-from bba.observability import LocalObservabilityStore
 from bba.protocol import (
     PromotionDecision,
     ReviewFindings,
     SolvabilityCertificateType,
     to_primitive,
 )
-from bba.preflight import run_preflight
-from bba.pricing import PriceCatalog
-from bba.replay import replay_solver_attempt
 from bba.runtime import SecureSandbox
-from bba.state import LocalStateStore, local_file_lock
-from bba.tournament import TournamentController
-from bba.tracing import configure_tracing, tracing_status
-from bba.validator import PackageValidator
+
+if TYPE_CHECKING:
+    from bba.evidence import EvidenceStore
+    from bba.state import LocalStateStore
+    from bba.tournament import TournamentController
 
 
 def _print_json(value: Any) -> None:
     print(json.dumps(to_primitive(value), indent=2, sort_keys=True))
 
 
+def discover_gcp_project() -> str:
+    """Resolve the GCP project without importing cloud libraries at CLI import."""
+
+    from bba.gcp import discover_gcp_project as discover
+
+    return discover()
+
+
 def _verify_package(args: argparse.Namespace) -> int:
+    from bba.evidence import tree_digest
+    from bba.validator import PackageValidator
+
     sandbox = SecureSandbox()
-    validator = PackageValidator(sandbox, sample_count=args.sample_count, timeout_seconds=args.timeout)
+    validator = PackageValidator(
+        sandbox,
+        sample_count=args.sample_count,
+        timeout_seconds=args.timeout,
+    )
     package = Path(args.package).resolve()
     digest = tree_digest(package)
     record = validator.validate(package, "standalone", digest, args.seed)
@@ -49,13 +54,15 @@ def _verify_package(args: argparse.Namespace) -> int:
 
 def _sandbox_status(_args: argparse.Namespace) -> int:
     sandbox = SecureSandbox()
-    _print_json({
-        "backend": sandbox.backend,
-        "expected_backend": sandbox.expected_backend,
-        "available": sandbox.available,
-        "unavailable_reason": sandbox.unavailable_reason or None,
-        "fail_closed": True,
-    })
+    _print_json(
+        {
+            "backend": sandbox.backend,
+            "expected_backend": sandbox.expected_backend,
+            "available": sandbox.available,
+            "unavailable_reason": sandbox.unavailable_reason or None,
+            "fail_closed": True,
+        }
+    )
     return 0 if sandbox.available else 1
 
 
@@ -67,16 +74,22 @@ def _web_console(args: argparse.Namespace) -> int:
 
 
 def _evidence_replay_cell(args: argparse.Namespace) -> int:
+    from bba.replay import replay_solver_attempt
+
     evidence = _evidence(args)
     _print_json(replay_solver_attempt(evidence, args.epoch_id, args.attempt_id))
     return 0
 
 
 def _evidence(args: argparse.Namespace) -> EvidenceStore:
+    from bba.evidence import EvidenceStore
+
     return EvidenceStore(Path(args.evidence_root))
 
 
 def _state(evidence: EvidenceStore) -> LocalStateStore:
+    from bba.state import LocalStateStore
+
     return LocalStateStore(evidence.root / "bba-state.sqlite3")
 
 
@@ -85,6 +98,8 @@ def _load_controller(
     epoch_id: str,
     state: LocalStateStore,
 ) -> TournamentController:
+    from bba.tournament import TournamentController
+
     return TournamentController(evidence.load_manifest(epoch_id), evidence, state=state)
 
 
@@ -93,34 +108,44 @@ def _saved_status(
     epoch_id: str,
     state: LocalStateStore,
 ) -> dict[str, Any]:
+    from bba.observability import LocalObservabilityStore
+    from bba.tracing import tracing_status
+
     root = evidence.epoch_root(epoch_id)
     result = state.status(epoch_id)
-    result.update({
-        "snapshots": sum(
-            1
-            for path in (root / "candidates").glob("*/snapshot.json")
-            if not path.parent.name.startswith(".")
-        ),
-        "instances": sum(
-            1
-            for path in (root / "instances").glob("*/instance.json")
-            if not path.parent.name.startswith(".")
-        ),
-        "validations": len(list((root / "validations").glob("*.json"))),
-        "solver_cells": len(list((root / "solver-cells").glob("*.json"))),
-        "solvability_certificates": len(
-            list((root / "solvability-certificates").glob("*/certificate.json"))
-        ),
-        "promotions": len(list((root / "promotions").glob("*.json"))),
-        "public_closed": (root / "evaluation" / "public.json").is_file(),
-        "holdout_complete": (root / "audit" / "holdout.json").is_file(),
-        "observability": LocalObservabilityStore(evidence.root).summary(epoch_id),
-        "tracing": tracing_status(),
-    })
+    result.update(
+        {
+            "snapshots": sum(
+                1
+                for path in (root / "candidates").glob("*/snapshot.json")
+                if not path.parent.name.startswith(".")
+            ),
+            "instances": sum(
+                1
+                for path in (root / "instances").glob("*/instance.json")
+                if not path.parent.name.startswith(".")
+            ),
+            "validations": len(list((root / "validations").glob("*.json"))),
+            "solver_cells": len(list((root / "solver-cells").glob("*.json"))),
+            "solvability_certificates": len(
+                list((root / "solvability-certificates").glob("*/certificate.json"))
+            ),
+            "promotions": len(list((root / "promotions").glob("*.json"))),
+            "public_closed": (root / "evaluation" / "public.json").is_file(),
+            "holdout_complete": (root / "audit" / "holdout.json").is_file(),
+            "observability": LocalObservabilityStore(evidence.root).summary(epoch_id),
+            "tracing": tracing_status(),
+        }
+    )
     return result
 
 
 def _epoch_create(args: argparse.Namespace) -> int:
+    from bba.epoch_setup import create_experiment_manifest, new_epoch_id
+    from bba.holdouts import HoldoutRegistry
+    from bba.state import local_file_lock
+    from bba.tournament import TournamentController
+
     project = discover_gcp_project()
     epoch_id = args.epoch_id or new_epoch_id()
     evidence = _evidence(args)
@@ -140,7 +165,9 @@ def _epoch_create(args: argparse.Namespace) -> int:
         else:
             manifest, private = create_experiment_manifest(project, epoch_id=epoch_id)
             HoldoutRegistry(evidence).transition(
-                epoch_id, manifest.hidden_commitments, "committed"
+                epoch_id,
+                manifest.hidden_commitments,
+                "committed",
             )
             evidence.freeze_epoch_setup(manifest, private)
         controller = TournamentController(manifest, evidence, state=_state(evidence))
@@ -149,19 +176,38 @@ def _epoch_create(args: argparse.Namespace) -> int:
 
 
 def _catalog(_args: argparse.Namespace) -> int:
+    from bba.catalog import catalog_summary
+
     _print_json(catalog_summary())
     return 0
 
 
 def _epoch_run(args: argparse.Namespace) -> int:
+    from bba.adk_runtime import build_adk_backends
+    from bba.observability import LocalObservabilityStore
+    from bba.state import local_file_lock
+    from bba.tournament import TournamentController
+    from bba.validator import PackageValidator
+
     evidence = _evidence(args)
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
         manifest = evidence.load_manifest(args.epoch_id)
         preflight_path = evidence.record_path(args.epoch_id, "preflight", "vertex")
         if not preflight_path.is_file():
             raise RuntimeError(
-                "paid epoch requires a passing Vertex preflight; run bba epoch preflight first"
+                "paid epoch requires a passing Vertex preflight; "
+                "run bba epoch preflight first"
             )
+        preflight = evidence.read_record(args.epoch_id, "preflight", "vertex")
+        if (
+            not isinstance(preflight, dict)
+            or not preflight.get("passed")
+            or preflight.get("manifest_digest") != manifest.digest
+        ):
+            raise RuntimeError(
+                "saved Vertex preflight is not a passing record for this manifest"
+            )
+
         state = _state(evidence)
         state.register_epoch(manifest)
         state.recover_interrupted(args.epoch_id)
@@ -175,13 +221,16 @@ def _epoch_run(args: argparse.Namespace) -> int:
         }:
             _print_json(restored.epoch_status())
             return 0
+
         sandbox = SecureSandbox(
             memory_mb=manifest.budget.memory_mb,
             process_limit=manifest.budget.process_limit,
             cpu_seconds=manifest.budget.cpu_seconds,
         )
         if not sandbox.available:
-            raise RuntimeError(sandbox.unavailable_reason or "secure local sandbox is unavailable")
+            raise RuntimeError(
+                sandbox.unavailable_reason or "secure local sandbox is unavailable"
+            )
         creators, solvers = build_adk_backends(
             manifest,
             construction_sandbox=sandbox,
@@ -209,16 +258,25 @@ def _epoch_run(args: argparse.Namespace) -> int:
 
 
 def _epoch_preflight(args: argparse.Namespace) -> int:
+    from bba.budget import estimate_epoch
+    from bba.observability import LocalObservabilityStore
+    from bba.preflight import run_preflight
+    from bba.pricing import PriceCatalog
+    from bba.state import local_file_lock
+
     evidence = _evidence(args)
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
         LocalObservabilityStore(evidence.root).recover_interrupted(args.epoch_id)
         manifest = evidence.load_manifest(args.epoch_id)
-        _print_json({
-            "estimate": estimate_epoch(manifest),
-            "price_estimate": PriceCatalog().estimate(manifest),
-            "preflight": run_preflight(manifest, evidence),
-        })
-    return 0
+        preflight = run_preflight(manifest, evidence)
+        _print_json(
+            {
+                "estimate": estimate_epoch(manifest),
+                "price_estimate": PriceCatalog().estimate(manifest),
+                "preflight": preflight,
+            }
+        )
+    return 0 if preflight["passed"] else 1
 
 
 def _epoch_status(args: argparse.Namespace) -> int:
@@ -229,11 +287,15 @@ def _epoch_status(args: argparse.Namespace) -> int:
 
 
 def _epoch_observability(args: argparse.Namespace) -> int:
+    from bba.observability import LocalObservabilityStore
+    from bba.tracing import tracing_status
+
     evidence = _evidence(args)
     evidence.load_manifest(args.epoch_id)
     _print_json(
         LocalObservabilityStore(evidence.root).summary(
-            args.epoch_id, recent_limit=args.recent
+            args.epoch_id,
+            recent_limit=args.recent,
         )
         | {"tracing": tracing_status()}
     )
@@ -241,14 +303,18 @@ def _epoch_observability(args: argparse.Namespace) -> int:
 
 
 def _epoch_certificate_items(args: argparse.Namespace) -> int:
+    from bba.state import local_file_lock
+
     evidence = _evidence(args)
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
         controller = _load_controller(evidence, args.epoch_id, _state(evidence))
         snapshot = controller.snapshot_by_id(args.snapshot_id)
-        _print_json({
-            "snapshot_id": snapshot.snapshot_id,
-            "item_ids": controller.select_human_certificate_items(snapshot),
-        })
+        _print_json(
+            {
+                "snapshot_id": snapshot.snapshot_id,
+                "item_ids": controller.select_human_certificate_items(snapshot),
+            }
+        )
     return 0
 
 
@@ -263,12 +329,17 @@ def _parse_evidence_files(values: Sequence[str]) -> dict[str, Path]:
 
 
 def _epoch_record_certificate(args: argparse.Namespace) -> int:
+    from bba.evidence import read_json
+    from bba.state import local_file_lock
+
     evidence = _evidence(args)
     answers = None
     if args.answers:
         answers = read_json(Path(args.answers))
         if not isinstance(answers, dict):
-            raise ValueError("certificate answers must be one JSON object keyed by item ID")
+            raise ValueError(
+                "certificate answers must be one JSON object keyed by item ID"
+            )
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
         controller = _load_controller(evidence, args.epoch_id, _state(evidence))
         snapshot = controller.snapshot_by_id(args.snapshot_id)
@@ -287,39 +358,48 @@ def _epoch_record_certificate(args: argparse.Namespace) -> int:
 
 
 def _epoch_candidates(args: argparse.Namespace) -> int:
+    from bba.state import local_file_lock
+
     evidence = _evidence(args)
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
         controller = _load_controller(evidence, args.epoch_id, _state(evidence))
-        _print_json([
-            {
-                "snapshot_id": snapshot.snapshot_id,
-                "creator": snapshot.creator.artifact_id,
-                "round": snapshot.round_index,
-                "design_digest": snapshot.design_digest,
-                "parent_snapshot_id": snapshot.parent_snapshot_id,
-                "validation_passed": (
-                    controller.validations[snapshot.snapshot_id].passed
-                    if snapshot.snapshot_id in controller.validations
-                    else None
-                ),
-                "solver_cells": len(controller.cells.get(snapshot.snapshot_id, ())),
-                "instance_digest": (
-                    controller.instances[snapshot.snapshot_id].instance_digest
-                    if snapshot.snapshot_id in controller.instances
-                    else None
-                ),
-                "reviewed": snapshot.design_digest in controller.promotions,
-                "solvability_certificates": sum(
-                    certificate.snapshot_id == snapshot.snapshot_id
-                    for certificate in controller.solvability_certificates.values()
-                ),
-            }
-            for snapshot in controller.snapshots
-        ])
+        _print_json(
+            [
+                {
+                    "snapshot_id": snapshot.snapshot_id,
+                    "creator": snapshot.creator.artifact_id,
+                    "round": snapshot.round_index,
+                    "design_digest": snapshot.design_digest,
+                    "parent_snapshot_id": snapshot.parent_snapshot_id,
+                    "validation_passed": (
+                        controller.validations[snapshot.snapshot_id].passed
+                        if snapshot.snapshot_id in controller.validations
+                        else None
+                    ),
+                    "solver_cells": len(
+                        controller.cells.get(snapshot.snapshot_id, ())
+                    ),
+                    "instance_digest": (
+                        controller.instances[snapshot.snapshot_id].instance_digest
+                        if snapshot.snapshot_id in controller.instances
+                        else None
+                    ),
+                    "reviewed": snapshot.design_digest in controller.promotions,
+                    "solvability_certificates": sum(
+                        certificate.snapshot_id == snapshot.snapshot_id
+                        for certificate in controller.solvability_certificates.values()
+                    ),
+                }
+                for snapshot in controller.snapshots
+            ]
+        )
     return 0
 
 
 def _epoch_record_review(args: argparse.Namespace) -> int:
+    from bba.evidence import read_json
+    from bba.state import local_file_lock
+
     evidence = _evidence(args)
     signing_key = Path(args.signing_key_file).read_bytes().strip()
     public_key = Path(args.public_key_file).read_bytes().strip()
@@ -346,6 +426,10 @@ def _epoch_record_review(args: argparse.Namespace) -> int:
 
 
 def _epoch_freeze_audit(args: argparse.Namespace) -> int:
+    from bba.audit_runner import build_public_audit_population
+    from bba.state import local_file_lock
+    from bba.validator import PackageValidator
+
     evidence = _evidence(args)
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
         controller = _load_controller(evidence, args.epoch_id, _state(evidence))
@@ -363,6 +447,8 @@ def _epoch_freeze_audit(args: argparse.Namespace) -> int:
 
 
 def _epoch_close(args: argparse.Namespace) -> int:
+    from bba.state import local_file_lock
+
     evidence = _evidence(args)
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
         controller = _load_controller(evidence, args.epoch_id, _state(evidence))
@@ -371,6 +457,13 @@ def _epoch_close(args: argparse.Namespace) -> int:
 
 
 def _epoch_audit(args: argparse.Namespace) -> int:
+    from bba.adk_runtime import build_hidden_solver_backends
+    from bba.audit_runner import SealedAuditRunner
+    from bba.evidence import read_json
+    from bba.observability import LocalObservabilityStore
+    from bba.state import local_file_lock
+    from bba.validator import PackageValidator
+
     evidence = _evidence(args)
     with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
         LocalObservabilityStore(evidence.root).recover_interrupted(args.epoch_id)
@@ -429,7 +522,8 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
     run.set_defaults(handler=_epoch_run)
 
     preflight = epoch_commands.add_parser(
-        "preflight", help="run the small paid Vertex model readiness check"
+        "preflight",
+        help="run the small paid Vertex model readiness check",
     )
     _add_epoch_id(preflight)
     preflight.set_defaults(handler=_epoch_preflight)
@@ -452,20 +546,23 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
     observability.set_defaults(handler=_epoch_observability)
 
     candidates = epoch_commands.add_parser(
-        "candidates", help="list saved candidate snapshots"
+        "candidates",
+        help="list saved candidate snapshots",
     )
     _add_epoch_id(candidates)
     candidates.set_defaults(handler=_epoch_candidates)
 
     certificate_items = epoch_commands.add_parser(
-        "certificate-items", help="select six items for a human solvability certificate"
+        "certificate-items",
+        help="select six items for a human solvability certificate",
     )
     _add_epoch_id(certificate_items)
     certificate_items.add_argument("--snapshot-id", required=True)
     certificate_items.set_defaults(handler=_epoch_certificate_items)
 
     certificate = epoch_commands.add_parser(
-        "record-certificate", help="freeze independent solvability evidence"
+        "record-certificate",
+        help="freeze independent solvability evidence",
     )
     _add_epoch_id(certificate)
     certificate.add_argument("--snapshot-id", required=True)
@@ -488,7 +585,8 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
     certificate.set_defaults(handler=_epoch_record_certificate)
 
     review = epoch_commands.add_parser(
-        "record-review", help="sign and save a human promotion decision"
+        "record-review",
+        help="sign and save a human promotion decision",
     )
     _add_epoch_id(review)
     review.add_argument("--snapshot-id", required=True)
@@ -508,16 +606,23 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
     review.set_defaults(handler=_epoch_record_review)
 
     freeze = epoch_commands.add_parser(
-        "freeze-audit", help="freeze public evaluator scores before holdout access"
+        "freeze-audit",
+        help="freeze public evaluator scores before holdout access",
     )
     _add_epoch_id(freeze)
     freeze.set_defaults(handler=_epoch_freeze_audit)
 
-    close = epoch_commands.add_parser("close", help="publish the public evaluation")
+    close = epoch_commands.add_parser(
+        "close",
+        help="publish the public evaluation",
+    )
     _add_epoch_id(close)
     close.set_defaults(handler=_epoch_close)
 
-    audit = epoch_commands.add_parser("audit", help="open and score the sealed holdout")
+    audit = epoch_commands.add_parser(
+        "audit",
+        help="open and score the sealed holdout",
+    )
     _add_epoch_id(audit)
     audit.set_defaults(handler=_epoch_audit)
 
@@ -527,6 +632,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="BenchBenchAgent local two-sided tournament controller"
     )
     commands = parser.add_subparsers(dest="command", required=True)
+
     verify = commands.add_parser(
         "verify-package",
         help="validate an executable candidate in the secure sandbox",
@@ -536,16 +642,19 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--sample-count", type=int, default=30)
     verify.add_argument("--timeout", type=int, default=600)
     verify.set_defaults(handler=_verify_package)
+
     status = commands.add_parser(
         "sandbox-status",
         help="report whether an audited OS sandbox is available",
     )
     status.set_defaults(handler=_sandbox_status)
+
     catalog = commands.add_parser(
         "catalog",
         help="show the BBA-owned GCP serverless model catalog",
     )
     catalog.set_defaults(handler=_catalog)
+
     web = commands.add_parser(
         "web",
         help="run the localhost operator console",
@@ -558,18 +667,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="local TCP port (default: 8765)",
     )
     web.set_defaults(handler=_web_console)
+
     evidence = commands.add_parser(
-        "evidence", help="verify and replay immutable local evidence"
+        "evidence",
+        help="verify and replay immutable local evidence",
     )
     evidence_commands = evidence.add_subparsers(
-        dest="evidence_command", required=True
+        dest="evidence_command",
+        required=True,
     )
     replay = evidence_commands.add_parser(
-        "replay-cell", help="replay one successful solver attempt"
+        "replay-cell",
+        help="replay one successful solver attempt",
     )
     _add_epoch_id(replay)
     replay.add_argument("--attempt-id", required=True)
     replay.set_defaults(handler=_evidence_replay_cell)
+
     _build_epoch_parser(commands)
     return parser
 
@@ -577,11 +691,16 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    configure_tracing()
     try:
+        if args.command in {"epoch", "web"}:
+            from bba.tracing import configure_tracing
+
+            configure_tracing()
         return int(args.handler(args))
     except Exception as exc:
-        print(f"BBA error: {exc}", file=sys.stderr)
+        if os.environ.get("BBA_DEBUG") == "1":
+            raise
+        print(f"BBA error [{type(exc).__name__}]: {exc}", file=sys.stderr)
         return 2
 
 

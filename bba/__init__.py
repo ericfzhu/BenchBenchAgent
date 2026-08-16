@@ -1,47 +1,57 @@
-"""BenchBenchAgent end-state tournament protocol.
+"""BenchBenchAgent public interfaces, loaded only when requested.
 
-The :mod:`bba` package implements a two-sided creator/solver tournament with
-immutable local evidence, restart-safe local state, human-gated promotion, a
-sealed holdout audit, and Google ADK inference through Vertex AI.
+Keeping package initialization lightweight lets local diagnostics such as
+``bba sandbox-status`` run before optional cloud-provider integrations are
+imported.
 """
 
-from bba.protocol import (
-    AuditStatus,
-    CandidateStatus,
-    CellState,
-    ExperimentManifest,
-    ModelIdentity,
-    PromotionDecision,
-    ReviewFindings,
-    SolvabilityCertificate,
-    SolvabilityCertificateType,
-    SolverAttempt,
-)
-from bba.audit import audit_evaluator
-from bba.tournament import TournamentController
-from bba.adk_runtime import AdkCreatorBackend, AdkSolverBackend, build_adk_backends
-from bba.catalog import CATALOG_VERSION, SERVERLESS_COHORT
-from bba.evidence import EvidenceStore
-from bba.state import LocalStateStore
+from __future__ import annotations
 
-__all__ = [
-    "AuditStatus",
-    "CandidateStatus",
-    "CellState",
-    "ExperimentManifest",
-    "EvidenceStore",
-    "LocalStateStore",
-    "ModelIdentity",
-    "PromotionDecision",
-    "ReviewFindings",
-    "SolvabilityCertificate",
-    "SolvabilityCertificateType",
-    "SolverAttempt",
-    "TournamentController",
-    "AdkCreatorBackend",
-    "AdkSolverBackend",
-    "CATALOG_VERSION",
-    "SERVERLESS_COHORT",
-    "audit_evaluator",
-    "build_adk_backends",
-]
+from importlib import import_module
+from typing import Any
+
+
+_EXPORTS = {
+    "AuditStatus": ("bba.protocol", "AuditStatus"),
+    "CandidateStatus": ("bba.protocol", "CandidateStatus"),
+    "CellState": ("bba.protocol", "CellState"),
+    "ExperimentManifest": ("bba.protocol", "ExperimentManifest"),
+    "EvidenceStore": ("bba.evidence", "EvidenceStore"),
+    "LocalStateStore": ("bba.state", "LocalStateStore"),
+    "ModelIdentity": ("bba.protocol", "ModelIdentity"),
+    "PromotionDecision": ("bba.protocol", "PromotionDecision"),
+    "ReviewFindings": ("bba.protocol", "ReviewFindings"),
+    "SolvabilityCertificate": ("bba.protocol", "SolvabilityCertificate"),
+    "SolvabilityCertificateType": (
+        "bba.protocol",
+        "SolvabilityCertificateType",
+    ),
+    "SolverAttempt": ("bba.protocol", "SolverAttempt"),
+    "TournamentController": ("bba.tournament", "TournamentController"),
+    "AdkCreatorBackend": ("bba.adk_runtime", "AdkCreatorBackend"),
+    "AdkSolverBackend": ("bba.adk_runtime", "AdkSolverBackend"),
+    "CATALOG_VERSION": ("bba.catalog", "CATALOG_VERSION"),
+    "SERVERLESS_COHORT": ("bba.catalog", "SERVERLESS_COHORT"),
+    "audit_evaluator": ("bba.audit", "audit_evaluator"),
+    "build_adk_backends": ("bba.adk_runtime", "build_adk_backends"),
+    "build_adk_solver_backends": (
+        "bba.adk_runtime",
+        "build_adk_solver_backends",
+    ),
+}
+
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name: str) -> Any:
+    target = _EXPORTS.get(name)
+    if target is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module_name, attribute_name = target
+    value = getattr(import_module(module_name), attribute_name)
+    globals()[name] = value
+    return value
+
+
+def __dir__() -> list[str]:
+    return sorted(set(globals()) | set(__all__))

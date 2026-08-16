@@ -60,21 +60,24 @@ A local file lock prevents two processes from changing one epoch at the same tim
 
 ## Install
 
-Use Python 3.10 or later.
+Use Python 3.10 or later. On Ubuntu, use the installed `python3` unless a
+specific interpreter was selected intentionally.
 
-On Ubuntu, install Bubblewrap first:
+Install Bubblewrap and the local Python runtime:
 
 ```bash
 sudo apt-get update
-sudo apt-get install bubblewrap
-```
+sudo apt-get install -y python3 python3-venv bubblewrap
 
-The Ubuntu kernel must permit Bubblewrap to make an unprivileged user namespace.
-
-```bash
-python3.10 -m venv .venv
+python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip setuptools wheel
 .venv/bin/pip install -e .
 ```
+
+The Ubuntu kernel and AppArmor policy must permit Bubblewrap to make an
+unprivileged user namespace. See the
+[Ubuntu and Google Cloud readiness guide](docs/ubuntu-gcp-readiness.md) for
+Ubuntu 24.04 troubleshooting and the complete smoke-test sequence.
 
 Run the tests:
 
@@ -91,16 +94,20 @@ Check the local sandbox:
 ## Google Cloud setup
 
 Enable Vertex AI and create local Application Default Credentials.
+`gcloud auth login` alone does not authenticate the Python client libraries.
 
 ```bash
 gcloud config set project PROJECT_ID
 gcloud services enable aiplatform.googleapis.com
 gcloud auth application-default login
+gcloud auth application-default set-quota-project PROJECT_ID
+export GOOGLE_CLOUD_PROJECT=PROJECT_ID
 ```
 
-Accept the Model Garden terms for the models in the BBA catalog.
-BBA sets the ADK location and Google Cloud mode.
-If ADC cannot find the project, set `GOOGLE_CLOUD_PROJECT`.
+Accept the Model Garden terms and obtain quota for every model in the BBA
+catalog. BBA propagates the frozen project and `global` location to the native
+Google/Anthropic adapters and the LiteLLM Vertex adapter. The paid preflight
+reports every catalog route and returns a nonzero status until all routes pass.
 
 Show the catalog:
 
@@ -263,6 +270,7 @@ Trace export does not replace local evidence, restart state, or ranking data.
 
 - [Protocol specification](docs/protocol.md): Required rules for one epoch.
 - [Operations guide](docs/operations.md): Local setup, commands, recovery, review, and audit.
+- [Ubuntu and Google Cloud readiness](docs/ubuntu-gcp-readiness.md): ADC, Bubblewrap, AppArmor, and paid preflight checks.
 - [Implementation status](docs/implementation-status.md): Known incomplete work and completion conditions.
 - [Completion plan](docs/implementation-plan.md): Work order, protocol decisions, tests, and exit gates.
 - [Production acceptance](docs/production-acceptance.md): Required paid and independent evidence for release verification.
