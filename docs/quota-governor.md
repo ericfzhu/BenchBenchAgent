@@ -19,6 +19,12 @@ Usage v1beta1 API with `view=FULL`. The operator's ADC principal needs the
 `serviceusage.quotas.get` permission. `roles/serviceusage.serviceUsageViewer` or
 `roles/servicemanagement.quotaViewer` are suitable read-only roles.
 
+Service Usage quota resources use the numeric project resource. BBA resolves the
+configured project ID through Cloud Resource Manager before querying quotas.
+That lookup requires `resourcemanager.projects.get`. Operators who already know
+the project number can set `BBA_GCP_PROJECT_NUMBER` or
+`GOOGLE_CLOUD_PROJECT_NUMBER` instead.
+
 BBA reads the effective bucket values, including project overrides. For fixed
 quota routes, missing or zero QPM/input-TPM/output-TPM is a preflight failure.
 The quota snapshot is also saved as append-only epoch evidence under
@@ -74,9 +80,29 @@ BBA targets:
 - 8,000 output tokens per minute;
 - at least 15 seconds between Grok requests.
 
-The governor also caps a single model turn's configured maximum output tokens to
-its effective output-TPM target. Input usage is estimated conservatively before
-the call and replaced with provider-reported usage after the response.
+## Per-request output grants
+
+Output capacity is granted atomically when a model call is admitted. BBA does
+not reserve the whole rolling output-TPM allowance for each call.
+
+For a fixed bucket, the governor divides the output headroom remaining in the
+rolling minute by the request slots still available in that minute. With the
+Grok limits above, the first of four available calls receives a normal cap of
+2,000 output tokens:
+
+```text
+8,000 output tokens / 4 request slots = 2,000 tokens
+```
+
+If that call actually uses all 2,000 tokens, each of the next three calls can
+still receive 2,000 tokens at 15-second intervals. If it uses only 500 tokens,
+the unused 1,500-token headroom is available to later calls; the next call can
+receive a larger grant without exceeding the rolling 8,000-token target.
+
+The quota lease returned to the ADK hook contains the exact granted output cap.
+The hook applies that cap to `max_output_tokens` before sending the provider
+request. Input usage is estimated conservatively before admission and replaced
+with provider-reported usage after the response.
 
 ## Rolling ledger
 
@@ -117,4 +143,5 @@ truth for effective project limits.
 The development portal adds **Effective Vertex quotas** to workspace readiness
 and an **Inspect effective model quotas** diagnostic. The diagnostic refreshes
 quota values and prints provider limits, BBA targets, bucket names, rolling local
-usage, and minimum request spacing for every frozen catalog model.
+usage, minimum request spacing, and the nominal output grant per request for
+every frozen catalog model.
