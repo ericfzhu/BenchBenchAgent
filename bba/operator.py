@@ -1,297 +1,141 @@
-"""Read local BBA evidence and queue controlled epoch operations."""
+"""Operator-console facade with readiness checks and local diagnostics."""
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
-import re
+import platform
 import subprocess
 import sys
 import tempfile
-import threading
-import uuid
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Sequence
 
-from bba.evidence import EvidenceStore, read_json
-from bba.observability import LocalObservabilityStore
-from bba.protocol import (
-    CandidateStatus,
-    PromotionDecision,
-    ReviewFindings,
-    SolvabilityCertificateType,
-    to_primitive,
-)
-from bba.scoring import classify_candidate
-from bba.state import LocalStateStore, local_file_lock
-from bba.tournament import TournamentController
-from bba.tracing import tracing_status
+from bba._operator import *  # noqa: F401,F403
+from bba._operator import OperatorConsole as _OperatorConsole
+from bba.catalog import CATALOG_VERSION, SERVERLESS_COHORT
+from bba.dependencies import LocalWheelCatalog
+from bba.gcp import discover_gcp_project
+from bba.pricing import PriceCatalog
+from bba.runtime import SecureSandbox
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+class OperatorConsole(_OperatorConsole):
+    """Local development portal API layered over the production controller."""
 
-
-@dataclass
-class OperatorJob:
-    job_id: str
-    label: str
-    epoch_id: Optional[str]
-    status: str
-    created_at: str
-    started_at: Optional[str] = None
-    finished_at: Optional[str] = None
-    output: str = ""
-    error: str = ""
-
-
-class OperatorJobQueue:
-    """Run one local controller operation at a time."""
-
-    def __init__(self) -> None:
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="bba-console")
-        self._lock = threading.Lock()
-        self._jobs: dict[str, OperatorJob] = {}
-        self._closed = False
-
-    def submit(
-        self,
-        label: str,
-        epoch_id: Optional[str],
-        operation: Callable[[], Any],
-    ) -> OperatorJob:
-        with self._lock:
-            if self._closed:
-                raise RuntimeError("the console operation queue is closed")
-            if any(job.status in {"queued", "running"} for job in self._jobs.values()):
-                raise RuntimeError("another console operation is queued or running")
-            job = OperatorJob(uuid.uuid4().hex, label, epoch_id, "queued", _now())
-            self._jobs[job.job_id] = job
-        self._executor.submit(self._run, job.job_id, operation)
-        return job
-
-    def _run(self, job_id: str, operation: Callable[[], Any]) -> None:
-        with self._lock:
-            job = self._jobs[job_id]
-            job.status = "running"
-            job.started_at = _now()
-        try:
-            result = operation()
-            output = result if isinstance(result, str) else json.dumps(
-                to_primitive(result), indent=2, sort_keys=True
-            )
-        except Exception as exc:
-            with self._lock:
-                job.status = "failed"
-                job.error = str(exc)[-8000:]
-                job.finished_at = _now()
-            return
-        with self._lock:
-            job.status = "succeeded"
-            job.output = output[-32000:]
-            job.finished_at = _now()
-
-    def get(self, job_id: str) -> Optional[dict[str, Any]]:
-        with self._lock:
-            job = self._jobs.get(job_id)
-            return asdict(job) if job else None
-
-    def recent(self, limit: int = 10) -> list[dict[str, Any]]:
-        with self._lock:
-            values = sorted(self._jobs.values(), key=lambda item: item.created_at, reverse=True)
-            return [asdict(job) for job in values[:limit]]
-
-    def close(self) -> None:
-        with self._lock:
-            self._closed = True
-            for job in self._jobs.values():
-                if job.status == "queued":
-                    job.status = "failed"
-                    job.error = "the console stopped before this operation started"
-                    job.finished_at = _now()
-        self._executor.shutdown(wait=False, cancel_futures=True)
-
-
-class OperatorConsole:
-    """Provide the local operator view and the approved mutation surface."""
-
-    EPOCH_ACTIONS = {
-        "preflight": "Run paid preflight",
-        "run": "Run or resume public epoch",
-        "freeze-audit": "Freeze audit population",
-        "close": "Close public epoch",
-        "audit": "Run sealed audit",
+    DIAGNOSTIC_ACTIONS = {
+        "sandbox": "Check local sandbox",
+        "catalog": "Inspect model catalog",
+        "tests": "Run local test suite",
     }
 
-    def __init__(self, evidence_root: Path, jobs: Optional[OperatorJobQueue] = None):
-        self.evidence = EvidenceStore(evidence_root)
-        self.state = LocalStateStore(self.evidence.root / "bba-state.sqlite3")
-        self.observability_store = LocalObservabilityStore(self.evidence.root)
-        self.jobs = jobs or OperatorJobQueue()
-        self._process_lock = threading.Lock()
-        self._active_process: Optional[subprocess.Popen[bytes]] = None
-        self._closed = False
+    def readiness(self) -> dict[str, Any]:
+        checks: list[dict[str, Any]] = []
 
-    @staticmethod
-    def validate_epoch_id(epoch_id: str) -> str:
-        value = epoch_id.strip()
-        if not re.fullmatch(r"[a-zA-Z0-9._-]{1,100}", value):
-            raise ValueError("epoch ID must use 1 to 100 letters, numbers, dots, dashes, or underscores")
-        return value
-
-    def _controller(self, epoch_id: str) -> TournamentController:
-        epoch_id = self.validate_epoch_id(epoch_id)
-        manifest = self.evidence.load_manifest(epoch_id)
-        return TournamentController(manifest, self.evidence, state=self.state)
-
-    def _status(self, epoch_id: str) -> dict[str, Any]:
-        epoch_id = self.validate_epoch_id(epoch_id)
-        root = self.evidence.epoch_root(epoch_id)
-        result = self.state.status(epoch_id)
-        result.update({
-            "snapshots": len(list((root / "candidates").glob("*/snapshot.json"))),
-            "instances": len(list((root / "instances").glob("*/instance.json"))),
-            "validations": len(list((root / "validations").glob("*.json"))),
-            "solver_cells": len(list((root / "solver-cells").glob("*.json"))),
-            "solvability_certificates": len(
-                list((root / "solvability-certificates").glob("*/certificate.json"))
-            ),
-            "promotions": len(list((root / "promotions").glob("*.json"))),
-            "public_closed": (root / "evaluation" / "public.json").is_file(),
-            "holdout_complete": (root / "audit" / "holdout.json").is_file(),
-            "observability": self.observability_store.summary(epoch_id),
-            "tracing": tracing_status(),
-        })
-        return result
-
-    def list_epochs(self) -> list[dict[str, Any]]:
-        epochs = []
-        for path in sorted((self.evidence.root / "epochs").glob("*/manifest.json"), reverse=True):
-            try:
-                manifest = self.evidence.load_manifest(path.parent.name)
-                status = self._status(manifest.epoch_id)
-                status.update({
-                    "created_at": getattr(manifest, "created_at", None) or status.get("updated_at", "—"),
-                    "catalog_version": manifest.catalog_version,
-                    "model_count": len(manifest.cohort),
-                })
-                epochs.append(status)
-            except Exception as exc:
-                epochs.append({"epoch_id": path.parent.name, "phase": "unreadable", "error": str(exc)})
-        return epochs
-
-    def epoch(self, epoch_id: str) -> dict[str, Any]:
-        epoch_id = self.validate_epoch_id(epoch_id)
-        manifest = self.evidence.load_manifest(epoch_id)
-        value = self._status(epoch_id)
-        value["manifest"] = {
-            "catalog_version": manifest.catalog_version,
-            "created_at": getattr(manifest, "created_at", None) or value.get("updated_at", "—"),
-            "gcp_project": manifest.gcp_project,
-            "gcp_location": manifest.gcp_location,
-            "models": len(manifest.cohort),
-            "rounds": manifest.thresholds.rounds,
-            "solver_repetitions": manifest.thresholds.solver_repetitions,
-        }
-        value["candidates"] = self.candidates(epoch_id)
-        value["approved"] = sum(item["reviewed"] for item in value["candidates"])
-        return value
-
-    def candidates(self, epoch_id: str) -> list[dict[str, Any]]:
-        epoch_id = self.validate_epoch_id(epoch_id)
-        controller = self._controller(epoch_id)
-        rows = []
-        for snapshot in reversed(controller.snapshots):
-            validation = controller.validations.get(snapshot.snapshot_id)
-            if validation is None:
-                status = CandidateStatus.INCOMPLETE
-                best = panel = None
-            else:
-                evaluation = classify_candidate(
-                    snapshot,
-                    validation,
-                    controller.cells.get(snapshot.snapshot_id, ()),
-                    controller.manifest.cohort,
-                    controller.manifest.thresholds.solver_repetitions,
-                    controller.manifest.thresholds.rejection_accuracy,
-                    controller.promotions.get(snapshot.design_digest),
-                )
-                status = evaluation.status
-                best = evaluation.best_solver_median
-                panel = evaluation.panel_median
-            rows.append({
-                "snapshot_id": snapshot.snapshot_id,
-                "creator": snapshot.creator.artifact_id,
-                "model": snapshot.creator.model,
-                "round": snapshot.round_index,
-                "status": status.value,
-                "validation_passed": validation.passed if validation else None,
-                "solver_cells": len(controller.cells.get(snapshot.snapshot_id, ())),
-                "best_solver_median": best,
-                "panel_median": panel,
-                "certificate_count": sum(
-                    item.snapshot_id == snapshot.snapshot_id
-                    for item in controller.solvability_certificates.values()
+        try:
+            sandbox = SecureSandbox()
+            checks.append({
+                "id": "sandbox",
+                "label": "Generated-code sandbox",
+                "status": "passed" if sandbox.available else "failed",
+                "detail": (
+                    sandbox.backend
+                    if sandbox.available
+                    else sandbox.unavailable_reason
+                    or "The required OS sandbox is unavailable."
                 ),
-                "reviewed": snapshot.design_digest in controller.promotions,
+                "required": True,
             })
-        return rows
+        except Exception as exc:
+            checks.append({
+                "id": "sandbox",
+                "label": "Generated-code sandbox",
+                "status": "failed",
+                "detail": str(exc),
+                "required": True,
+            })
 
-    def candidate(self, epoch_id: str, snapshot_id: str) -> dict[str, Any]:
-        epoch_id = self.validate_epoch_id(epoch_id)
-        controller = self._controller(epoch_id)
-        snapshot = controller.snapshot_by_id(snapshot_id)
-        row = next(item for item in self.candidates(epoch_id) if item["snapshot_id"] == snapshot_id)
-        certificates = [
-            to_primitive(item)
-            | {"digest": item.digest}
-            for item in controller.solvability_certificates.values()
-            if item.snapshot_id == snapshot_id
-        ]
-        promotions = []
-        for path in sorted((self.evidence.epoch_root(epoch_id) / "promotions").glob(f"{snapshot.design_digest}*.json")):
-            promotions.append(read_json(path))
-        selected_items = []
-        if snapshot_id in controller.instances:
-            selected_items = controller.select_human_certificate_items(snapshot)
-        return row | {
-            "design_digest": snapshot.design_digest,
-            "parent_snapshot_id": snapshot.parent_snapshot_id,
-            "created_at": snapshot.created_at,
-            "certificates": certificates,
-            "promotions": promotions,
-            "certificate_item_ids": selected_items,
-            "final_round": snapshot.round_index == controller.manifest.thresholds.rounds - 1,
-        }
+        try:
+            project = discover_gcp_project()
+            checks.append({
+                "id": "adc",
+                "label": "Application Default Credentials",
+                "status": "passed",
+                "detail": f"Project {project}",
+                "required": True,
+            })
+        except Exception as exc:
+            checks.append({
+                "id": "adc",
+                "label": "Application Default Credentials",
+                "status": "failed",
+                "detail": str(exc),
+                "required": True,
+            })
 
-    def results(self, epoch_id: str) -> dict[str, Any]:
-        epoch_id = self.validate_epoch_id(epoch_id)
-        root = self.evidence.epoch_root(epoch_id)
-        public_path = root / "evaluation" / "public.json"
-        audit_path = root / "audit" / "holdout.json"
+        prices = PriceCatalog()
+        missing_prices = sorted(
+            identity.model
+            for identity in SERVERLESS_COHORT
+            if identity.model not in prices.models
+        )
+        checks.append({
+            "id": "pricing",
+            "label": "Frozen price catalog",
+            "status": "passed" if not missing_prices else "failed",
+            "detail": (
+                f"{len(prices.models)} routes · {prices.safety_multiplier:g}× safety factor"
+                if not missing_prices
+                else "Missing: " + ", ".join(missing_prices)
+            ),
+            "required": True,
+        })
+
+        wheels = LocalWheelCatalog(
+            Path(__file__).resolve().parent / "data" / "dependency-wheels"
+        )
+        checks.append({
+            "id": "wheels",
+            "label": "Candidate dependencies",
+            "status": "warning" if not wheels.entries else "passed",
+            "detail": (
+                "Standard-library-only candidate packages"
+                if not wheels.entries
+                else f"{len(wheels.entries)} approved wheel versions"
+            ),
+            "required": False,
+        })
+
+        try:
+            adk_version = importlib.metadata.version("google-adk")
+        except importlib.metadata.PackageNotFoundError:
+            adk_version = "not installed"
         return {
-            "public": read_json(public_path) if public_path.is_file() else None,
-            "audit": read_json(audit_path) if audit_path.is_file() else None,
+            "ready": all(
+                item["status"] == "passed"
+                for item in checks
+                if item["required"]
+            ),
+            "checks": checks,
+            "catalog_version": CATALOG_VERSION,
+            "model_count": len(SERVERLESS_COHORT),
+            "python": platform.python_version(),
+            "google_adk": adk_version,
+            "evidence_root": str(self.evidence.root),
         }
 
-    def observability(self, epoch_id: str) -> dict[str, Any]:
-        epoch_id = self.validate_epoch_id(epoch_id)
-        self.evidence.load_manifest(epoch_id)
-        return self.observability_store.summary(epoch_id) | {
-            "tracing": tracing_status()
-        }
-
-    def _run_cli(self, arguments: Sequence[str]) -> str:
+    def _run_command(self, command: Sequence[str]) -> str:
         with tempfile.TemporaryFile() as output:
             with self._process_lock:
                 if self._closed:
-                    raise RuntimeError("the console stopped before the operation started")
+                    raise RuntimeError(
+                        "the console stopped before the operation started"
+                    )
                 process = subprocess.Popen(
-                    [sys.executable, "-m", "bba.cli", *arguments],
+                    list(command),
                     stdout=output,
                     stderr=subprocess.STDOUT,
+                    cwd=str(Path.cwd()),
                 )
                 self._active_process = process
             try:
@@ -302,143 +146,139 @@ class OperatorConsole:
                         self._active_process = None
             output.seek(0, 2)
             length = output.tell()
-            output.seek(max(0, length - 32000))
-            text = output.read().decode("utf-8", errors="replace").strip()
+            output.seek(max(0, length - 64000))
+            text = output.read().decode(
+                "utf-8", errors="replace"
+            ).strip()
         if return_code:
-            raise RuntimeError(text or f"BBA command stopped with status {return_code}")
+            raise RuntimeError(
+                text or f"diagnostic stopped with status {return_code}"
+            )
         return text
 
-    def close(self) -> None:
-        """Stop active local work so BBA can resume it on the next run."""
-
-        with self._process_lock:
-            self._closed = True
-            process = self._active_process
-            if process is not None and process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
-        self.jobs.close()
-
-    def create_epoch(self, epoch_id: str) -> OperatorJob:
-        epoch_id = self.validate_epoch_id(epoch_id)
+    def run_diagnostic(self, action: str):
+        if action not in self.DIAGNOSTIC_ACTIONS:
+            raise ValueError("unknown diagnostic action")
+        if action == "sandbox":
+            command = [sys.executable, "-m", "bba.cli", "sandbox-status"]
+        elif action == "catalog":
+            command = [sys.executable, "-m", "bba.cli", "catalog"]
+        else:
+            command = [
+                sys.executable,
+                "-m",
+                "unittest",
+                "discover",
+                "-s",
+                "tests",
+                "-p",
+                "test_*.py",
+                "-v",
+            ]
         return self.jobs.submit(
-            "Create epoch",
-            epoch_id,
-            lambda: self._run_cli([
-                "epoch", "create", "--epoch-id", epoch_id,
-                "--evidence-root", str(self.evidence.root),
-            ]),
-        )
-
-    def run_epoch_action(self, epoch_id: str, action: str) -> OperatorJob:
-        epoch_id = self.validate_epoch_id(epoch_id)
-        if action not in self.EPOCH_ACTIONS:
-            raise ValueError("unknown epoch action")
-        self.evidence.load_manifest(epoch_id)
-        return self.jobs.submit(
-            self.EPOCH_ACTIONS[action],
-            epoch_id,
-            lambda: self._run_cli([
-                "epoch", action, "--epoch-id", epoch_id,
-                "--evidence-root", str(self.evidence.root),
-            ]),
+            self.DIAGNOSTIC_ACTIONS[action],
+            None,
+            lambda: self._run_command(command),
         )
 
     @staticmethod
-    def _parse_evidence_lines(value: str) -> dict[str, Path]:
-        files: dict[str, Path] = {}
-        for line in value.splitlines():
-            if not line.strip():
-                continue
-            name, separator, path = line.strip().partition("=")
-            if not separator or not name or not path or name in files:
-                raise ValueError("each evidence line must be a unique NAME=/absolute/path")
-            source = Path(path)
-            if not source.is_absolute():
-                raise ValueError("each solvability evidence path must be absolute")
-            files[name] = source
-        return files
+    def _workflow(phase: str, *, preflight: bool, audit_frozen: bool,
+                  public_closed: bool, audited: bool) -> list[dict[str, Any]]:
+        public_complete = phase in {
+            "awaiting_review",
+            "audit_population_frozen",
+            "public_closed",
+            "audited",
+        }
+        definitions = [
+            ("setup", "Setup", True),
+            ("preflight", "Paid preflight", preflight),
+            ("run", "Public tournament", public_complete),
+            ("review", "Human review", audit_frozen),
+            ("freeze-audit", "Freeze audit inputs", audit_frozen),
+            ("close", "Publish results", public_closed),
+            ("audit", "Sealed audit", audited),
+        ]
+        first_incomplete = next(
+            (key for key, _label, complete in definitions if not complete),
+            None,
+        )
+        return [
+            {
+                "key": key,
+                "label": label,
+                "complete": complete,
+                "current": key == first_incomplete,
+            }
+            for key, label, complete in definitions
+        ]
 
-    def record_certificate(
-        self,
-        epoch_id: str,
-        snapshot_id: str,
-        certificate_type: str,
-        issuer_id: str,
-        independence_basis: str,
-        verification_method: str,
-        scope: str,
-        evidence_lines: str,
-        answers_path: str,
-    ) -> OperatorJob:
-        epoch_id = self.validate_epoch_id(epoch_id)
-        def operation() -> Any:
-            answers = None
-            if answers_path.strip():
-                path = Path(answers_path.strip())
-                if not path.is_absolute():
-                    raise ValueError("the certificate answers path must be absolute")
-                answers = read_json(path)
-                if not isinstance(answers, dict):
-                    raise ValueError("certificate answers must be one JSON object")
-            with local_file_lock(self.evidence.root, f"epoch-{epoch_id}"):
-                controller = self._controller(epoch_id)
-                snapshot = controller.snapshot_by_id(snapshot_id)
-                return controller.record_solvability_certificate(
-                    snapshot,
-                    SolvabilityCertificateType(certificate_type),
-                    issuer_id,
-                    independence_basis,
-                    verification_method,
-                    scope,
-                    self._parse_evidence_lines(evidence_lines),
-                    answers,
-                )
+    def epoch(self, epoch_id: str) -> dict[str, Any]:
+        value = super().epoch(epoch_id)
+        root = self.evidence.epoch_root(epoch_id)
+        preflight_path = root / "preflight" / "vertex.json"
+        preflight = False
+        if preflight_path.is_file():
+            try:
+                preflight = bool(json.loads(
+                    preflight_path.read_text(encoding="utf-8")
+                ).get("passed"))
+            except (OSError, json.JSONDecodeError):
+                preflight = False
+        audit_frozen = (root / "audit" / "public-population.json").is_file()
+        public_closed = (root / "evaluation" / "public.json").is_file()
+        audited = (root / "audit" / "holdout.json").is_file()
+        phase = value["phase"]
+        value["workflow"] = self._workflow(
+            phase,
+            preflight=preflight,
+            audit_frozen=audit_frozen,
+            public_closed=public_closed,
+            audited=audited,
+        )
+        value["review_open"] = not audit_frozen and not public_closed
+        value["action_states"] = {
+            "preflight": {
+                "enabled": not audit_frozen and not public_closed,
+                "complete": preflight,
+                "hint": "Verify every frozen Vertex route and tool contract.",
+            },
+            "run": {
+                "enabled": preflight and phase in {"created", "public_running"},
+                "complete": phase not in {"created", "public_running"},
+                "hint": "Run or resume creator, validation, and solver work.",
+            },
+            "freeze-audit": {
+                "enabled": phase in {"awaiting_review", "audit_population_frozen"},
+                "complete": audit_frozen,
+                "hint": "Commit public evaluator inputs and close review.",
+            },
+            "close": {
+                "enabled": audit_frozen and not audited,
+                "complete": public_closed,
+                "hint": "Publish the immutable public matrix and rankings.",
+            },
+            "audit": {
+                "enabled": public_closed,
+                "complete": audited,
+                "hint": "Open committed holdouts and validate the evaluator.",
+            },
+        }
+        value["usage"] = self.state.inference_usage(epoch_id)
+        value["usage"]["estimated_cost_usd"] = self.state.inference_cost_usd(
+            epoch_id
+        )
+        value["usage"]["max_estimated_cost_usd"] = value.get(
+            "max_estimated_cost_usd"
+        )
+        value["preflight_passed"] = preflight
+        return value
 
-        return self.jobs.submit("Record solvability certificate", epoch_id, operation)
-
-    def record_review(
-        self,
-        epoch_id: str,
-        snapshot_id: str,
-        reviewer_id: str,
-        certificate_digest: str,
-        decision: str,
-        finding_values: Mapping[str, bool],
-        limitations: str,
-        key_id: str,
-        signing_key_path: str,
-        public_key_path: str,
-        prior_review_digest: str,
-    ) -> OperatorJob:
-        epoch_id = self.validate_epoch_id(epoch_id)
-        findings = ReviewFindings(**dict(finding_values))
-
-        def operation() -> Any:
-            signing_path = Path(signing_key_path)
-            public_path = Path(public_key_path)
-            if not signing_path.is_absolute() or not public_path.is_absolute():
-                raise ValueError("review key paths must be absolute")
-            signing_key = signing_path.read_bytes().strip()
-            public_key = public_path.read_bytes().strip()
-            with local_file_lock(self.evidence.root, f"epoch-{epoch_id}"):
-                controller = self._controller(epoch_id)
-                snapshot = controller.snapshot_by_id(snapshot_id)
-                return controller.record_human_review(
-                    snapshot,
-                    reviewer_id,
-                    certificate_digest,
-                    PromotionDecision(decision),
-                    findings,
-                    tuple(line.strip() for line in limitations.splitlines() if line.strip()),
-                    key_id,
-                    signing_key,
-                    public_key,
-                    prior_review_digest.strip() or None,
-                )
-
-        return self.jobs.submit("Record signed candidate decision", epoch_id, operation)
+    def candidate(self, epoch_id: str, snapshot_id: str) -> dict[str, Any]:
+        value = super().candidate(epoch_id, snapshot_id)
+        root = self.evidence.epoch_root(epoch_id)
+        value["review_open"] = not (
+            (root / "audit" / "public-population.json").is_file()
+            or (root / "evaluation" / "public.json").is_file()
+        )
+        return value

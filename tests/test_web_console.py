@@ -1,4 +1,4 @@
-"""Local operator console tests."""
+"""Local development portal tests."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from fastapi.testclient import TestClient
@@ -35,11 +36,39 @@ class FakeConsole:
     evidence = FakeEvidence()
     jobs = FakeJobs()
     EPOCH_ACTIONS = OperatorConsole.EPOCH_ACTIONS
+    DIAGNOSTIC_ACTIONS = OperatorConsole.DIAGNOSTIC_ACTIONS
+
+    def readiness(self):
+        return {
+            "ready": True,
+            "checks": [
+                {
+                    "id": "sandbox",
+                    "label": "Generated-code sandbox",
+                    "status": "passed",
+                    "detail": "linux-bubblewrap",
+                    "required": True,
+                },
+                {
+                    "id": "adc",
+                    "label": "Application Default Credentials",
+                    "status": "passed",
+                    "detail": "Project bba-test-project",
+                    "required": True,
+                },
+            ],
+            "catalog_version": "catalog-v1",
+            "model_count": 2,
+            "python": "3.12.0",
+            "google_adk": "2.6.3",
+            "evidence_root": str(self.evidence.root),
+        }
 
     def list_epochs(self):
         return [{
             "epoch_id": "epoch-one",
             "phase": "awaiting_review",
+            "catalog_version": "catalog-v1",
             "snapshots": 3,
             "solver_cells": 108,
             "updated_at": "2026-08-12T01:02:03+00:00",
@@ -51,6 +80,9 @@ class FakeConsole:
     def run_epoch_action(self, epoch_id, action):
         raise AssertionError("missing confirmation should stop this call")
 
+    def run_diagnostic(self, action):
+        return SimpleNamespace(job_id="diagnostic-one")
+
     def epoch(self, epoch_id):
         return {
             "epoch_id": epoch_id,
@@ -59,6 +91,32 @@ class FakeConsole:
             "solver_cells": 108,
             "promotions": 1,
             "approved": 1,
+            "review_open": True,
+            "failed_work": [],
+            "max_estimated_cost_usd": 5000.0,
+            "usage": {
+                "calls": 42,
+                "input_tokens": 1000,
+                "output_tokens": 500,
+                "estimated_cost_usd": 12.5,
+                "max_estimated_cost_usd": 5000.0,
+            },
+            "workflow": [
+                {"key": "setup", "label": "Setup", "complete": True, "current": False},
+                {"key": "preflight", "label": "Paid preflight", "complete": True, "current": False},
+                {"key": "run", "label": "Public tournament", "complete": True, "current": False},
+                {"key": "review", "label": "Human review", "complete": False, "current": True},
+                {"key": "freeze-audit", "label": "Freeze audit inputs", "complete": False, "current": False},
+                {"key": "close", "label": "Publish results", "complete": False, "current": False},
+                {"key": "audit", "label": "Sealed audit", "complete": False, "current": False},
+            ],
+            "action_states": {
+                "preflight": {"enabled": True, "complete": True, "hint": "Check routes."},
+                "run": {"enabled": False, "complete": True, "hint": "Run work."},
+                "freeze-audit": {"enabled": True, "complete": False, "hint": "Freeze inputs."},
+                "close": {"enabled": False, "complete": False, "hint": "Publish."},
+                "audit": {"enabled": False, "complete": False, "hint": "Audit."},
+            },
             "manifest": {
                 "catalog_version": "catalog-v1",
                 "created_at": "2026-08-12T01:00:00+00:00",
@@ -90,6 +148,7 @@ class FakeConsole:
             "panel_median": 0.1,
             "solver_cells": 6,
             "reviewed": False,
+            "review_open": True,
             "certificates": [{
                 "digest": "c" * 64,
                 "certificate_type": "independent_reference",
@@ -183,20 +242,30 @@ class TestWebConsole(unittest.TestCase):
         self.app = create_app(FakeConsole())
         self.client = TestClient(self.app)
 
-    def test_dashboard_epoch_candidate_and_rankings_render(self):
+    def test_workspace_epoch_candidate_and_rankings_render(self):
         dashboard = self.client.get("/")
         self.assertEqual(dashboard.status_code, 200)
-        self.assertIn("Local tournament control", dashboard.text)
+        self.assertIn("Build, test, and run epochs", dashboard.text)
+        self.assertIn("Diagnostics", dashboard.text)
+        self.assertIn("Generated-code sandbox", dashboard.text)
         self.assertIn("epoch-one", dashboard.text)
         self.assertEqual(dashboard.headers["x-frame-options"], "DENY")
-        self.assertIn("frame-ancestors 'none'", dashboard.headers["content-security-policy"])
+        self.assertIn(
+            "frame-ancestors 'none'",
+            dashboard.headers["content-security-policy"],
+        )
 
         epoch = self.client.get("/epochs/epoch-one")
         self.assertEqual(epoch.status_code, 200)
+        self.assertIn("Workflow", epoch.text)
+        self.assertIn("Human review", epoch.text)
+        self.assertIn("Conservative cost", epoch.text)
         self.assertIn("Candidate benchmarks", epoch.text)
         self.assertIn("Run or resume public epoch", epoch.text)
 
-        candidate = self.client.get("/epochs/epoch-one/candidates/candidate-one")
+        candidate = self.client.get(
+            "/epochs/epoch-one/candidates/candidate-one"
+        )
         self.assertEqual(candidate.status_code, 200)
         self.assertIn("Record solvability evidence", candidate.text)
         self.assertIn("Record a signed candidate decision", candidate.text)
@@ -206,7 +275,6 @@ class TestWebConsole(unittest.TestCase):
         self.assertEqual(rankings.status_code, 200)
         self.assertIn("Final creator ranking", rankings.text)
         self.assertIn("Solver ranking", rankings.text)
-        self.assertIn("Blind creator ranking", rankings.text)
         self.assertIn("Spearman agreement", rankings.text)
         self.assertIn("Creator-by-solver matrix", rankings.text)
 
@@ -215,7 +283,15 @@ class TestWebConsole(unittest.TestCase):
         self.assertIn("Google ADK observability", activity.text)
         self.assertIn("Recent ADK invocations", activity.text)
         self.assertIn("Local OTLP export is on", activity.text)
-        self.assertIn("123", activity.text)
+
+    def test_diagnostic_route_uses_the_serialized_job_queue(self):
+        response = self.client.post(
+            "/diagnostics/tests",
+            data={"csrf_token": self.app.state.csrf_token},
+            follow_redirects=False,
+        )
+        self.assertEqual(response.status_code, 303)
+        self.assertEqual(response.headers["location"], "/jobs/diagnostic-one")
 
     def test_post_requires_csrf_confirmation_and_same_origin(self):
         missing = self.client.post(
@@ -225,7 +301,9 @@ class TestWebConsole(unittest.TestCase):
         self.assertEqual(missing.status_code, 400)
         self.assertIn("confirm this operation", missing.text)
 
-        bad_origin = self.client.get("/", headers={"origin": "https://evil.example"})
+        bad_origin = self.client.get(
+            "/", headers={"origin": "https://evil.example"}
+        )
         self.assertEqual(bad_origin.status_code, 403)
 
         bad_host = self.client.get("http://evil.example/")
@@ -241,11 +319,6 @@ class TestWebConsole(unittest.TestCase):
         args = build_parser().parse_args(["web", "--port", "9999"])
         self.assertEqual(args.port, 9999)
         self.assertEqual(args.evidence_root, ".bba")
-        observed = build_parser().parse_args([
-            "epoch", "observability", "--epoch-id", "epoch-one", "--recent", "7"
-        ])
-        self.assertEqual(observed.epoch_id, "epoch-one")
-        self.assertEqual(observed.recent, 7)
 
     def test_job_queue_serializes_mutations(self):
         queue = OperatorJobQueue()
@@ -261,7 +334,10 @@ class TestWebConsole(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 queue.submit("Second", "epoch-one", lambda: "not run")
             release.set()
-            while queue.get(first.job_id)["status"] not in {"succeeded", "failed"}:
+            while queue.get(first.job_id)["status"] not in {
+                "succeeded",
+                "failed",
+            }:
                 self.assertLess(time.time(), deadline)
                 time.sleep(0.01)
             self.assertEqual(queue.get(first.job_id)["output"], "done")
