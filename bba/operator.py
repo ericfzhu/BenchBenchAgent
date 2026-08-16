@@ -8,7 +8,7 @@ from bba._operator_portal import *  # noqa: F401,F403
 from bba._operator_portal import OperatorConsole as _OperatorConsole
 from bba.catalog import SERVERLESS_COHORT
 from bba.gcp import discover_gcp_project
-from bba.quota import QuotaGovernor
+from bba.quota_project import QuotaGovernor
 
 
 class OperatorConsole(_OperatorConsole):
