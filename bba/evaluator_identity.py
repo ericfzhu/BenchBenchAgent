@@ -19,6 +19,7 @@ BOUND_MODULES = (
     "catalog.py",
     "damage.py",
     "dependencies.py",
+    "_evidence.py",
     "evidence.py",
     "evaluator_identity.py",
     "holdouts.py",
