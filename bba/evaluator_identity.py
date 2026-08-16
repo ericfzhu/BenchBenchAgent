@@ -23,6 +23,7 @@ BOUND_MODULES = (
     "_evidence.py",
     "evidence.py",
     "evaluator_identity.py",
+    "gcp.py",
     "holdouts.py",
     "protocol.py",
     "registry.py",
@@ -38,8 +39,11 @@ BOUND_DISTRIBUTIONS = (
     "anthropic",
     "cryptography",
     "google-adk",
+    "google-auth",
+    "google-cloud-aiplatform",
     "google-genai",
     "litellm",
+    "pydantic",
 )
 
 
