@@ -10,7 +10,7 @@ from google.genai import types
 
 from bba import _adk_runtime as _core
 from bba._adk_runtime import *  # noqa: F401,F403
-from bba.quota import QuotaGovernor
+from bba.quota_project import QuotaGovernor
 
 
 class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
