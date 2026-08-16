@@ -13,6 +13,68 @@ from bba._adk_runtime import *  # noqa: F401,F403
 from bba.quota_project import QuotaGovernor
 
 
+CREATOR_DEPENDENCY_POLICY = """The approved candidate dependency catalog is empty.
+Use only the Python standard library. requirements.lock must be empty or contain
+comments only. Do not import, vendor, or require any third-party Python package.
+The controller will reject a candidate that declares an unavailable dependency."""
+CREATOR_INSTRUCTION = (
+    _core.CREATOR_INSTRUCTION.rstrip()
+    + "\n\n"
+    + CREATOR_DEPENDENCY_POLICY
+    + "\n"
+)
+
+
+class AdkCreatorBackend(_core.AdkCreatorBackend):
+    """Creator backend whose default prompt enforces the frozen wheel policy."""
+
+    def __init__(
+        self,
+        model,
+        *,
+        instruction: str = CREATOR_INSTRUCTION,
+        construction_sandbox=None,
+        max_files: int = 512,
+        max_bytes: int = 16 * 1024 * 1024,
+        require_usage_metadata: bool = True,
+        observability_store=None,
+    ) -> None:
+        super().__init__(
+            model,
+            instruction=instruction,
+            construction_sandbox=construction_sandbox,
+            max_files=max_files,
+            max_bytes=max_bytes,
+            require_usage_metadata=require_usage_metadata,
+            observability_store=observability_store,
+        )
+
+
+def build_adk_backends(
+    manifest,
+    *,
+    construction_sandbox=None,
+    creator_instruction: str = CREATOR_INSTRUCTION,
+    solver_instruction: str = SOLVER_INSTRUCTION,
+    observability_store=None,
+):
+    """Build the frozen cohort with the dependency-safe creator prompt."""
+
+    return _core.build_adk_backends(
+        manifest,
+        construction_sandbox=construction_sandbox,
+        creator_instruction=creator_instruction,
+        solver_instruction=solver_instruction,
+        observability_store=observability_store,
+    )
+
+
+# Keep implementation-module lookups aligned with the public facade. The core
+# builder resolves these globals at call time.
+_core.CREATOR_INSTRUCTION = CREATOR_INSTRUCTION
+_core.AdkCreatorBackend = AdkCreatorBackend
+
+
 class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
     """Apply model budgets and acquire quota capacity before each model call."""
 
