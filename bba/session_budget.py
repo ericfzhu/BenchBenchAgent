@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 
-SESSION_INPUT_TO_OUTPUT_RATIO = 8
+SESSION_INPUT_TO_OUTPUT_RATIO = 64
 
 
 @dataclass(frozen=True)
@@ -38,7 +38,7 @@ def agent_session_budget(resource_budget: Any) -> AgentSessionBudget:
     ``max_tokens`` remains the maximum cumulative output for one creator or
     solver invocation and also caps any individual model turn. Repeated prompt
     prefixes make cumulative input materially larger in tool-using sessions, so
-    BBA reserves and enforces an eight-times-larger input envelope.
+    BBA reserves and enforces a sixty-four-times-larger input envelope.
     """
 
     max_output = int(resource_budget.max_tokens)

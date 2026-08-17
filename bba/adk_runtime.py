@@ -91,6 +91,10 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
             self.per_call_max_tokens,
             max_llm_calls,
         )
+        self.session_token_budget = (
+            self._session_budget.max_session_input_tokens
+            + self._session_budget.max_session_output_tokens
+        )
         store = getattr(self, "store", None)
         governed = (
             self.identity.publisher,

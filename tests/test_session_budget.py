@@ -36,12 +36,12 @@ class TestSessionBudget(unittest.TestCase):
             "litellm:vertex_ai/xai/grok-4.3",
         )
 
-    def test_default_contract_is_128k_input_and_16k_output(self):
+    def test_default_contract_is_1024k_input_and_16k_output(self):
         value = agent_session_budget(
             SimpleNamespace(max_tokens=16_000, max_llm_calls=64)
         )
         self.assertEqual(value.max_output_tokens_per_call, 16_000)
-        self.assertEqual(value.max_session_input_tokens, 128_000)
+        self.assertEqual(value.max_session_input_tokens, 1_024_000)
         self.assertEqual(value.max_session_output_tokens, 16_000)
         self.assertEqual(value.max_llm_calls, 64)
 
@@ -64,10 +64,10 @@ class TestSessionBudget(unittest.TestCase):
             limits,
         )
         args, attribution, cost = state.reservations[0]
-        self.assertEqual(args[2:5], (64, 128_000, 16_000))
+        self.assertEqual(args[2:5], (64, 1_024_000, 16_000))
         self.assertEqual(attribution.model, "grok-4.3")
         self.assertFalse(attribution.cost_exempt)
-        self.assertAlmostEqual(cost, 0.4, places=6)
+        self.assertAlmostEqual(cost, 2.64, places=6)
 
         proxy.reconcile_inference(
             "epoch",
@@ -238,9 +238,9 @@ class TestSessionBudget(unittest.TestCase):
         response = SimpleNamespace(
             model_version=None,
             usage_metadata=SimpleNamespace(
-                prompt_token_count=81,
+                prompt_token_count=641,
                 candidates_token_count=1,
-                total_token_count=82,
+                total_token_count=642,
             ),
         )
         with self.assertRaisesRegex(RuntimeError, "session token budget"):

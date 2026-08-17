@@ -126,7 +126,7 @@ Run or resume the public tournament:
   --evidence-root .bba
 ```
 
-The current 12-model, three-round cohort plans 36 creator invocations and, when all designs validate, 1,296 public solver cells. The sealed audit can later add 432 hidden solver cells on eligible final-round snapshots.
+The current 9-model, three-round cohort plans 27 creator invocations and, when all designs validate, 729 public solver cells. The sealed audit can later add 243 hidden solver cells on eligible final-round snapshots.
 
 BBA reserves calls, input tokens, output tokens, and a conservative USD amount before each model attempt. Creator retries use distinct reservations. Timeout and provider failures are the only retryable solver states; immutable attempts are never overwritten.
 

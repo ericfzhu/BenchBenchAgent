@@ -763,6 +763,13 @@ class TournamentController:
         trace_root = self.evidence.epoch_root(self.manifest.epoch_id) / "agent-traces"
         trace_paths = sorted(trace_root.glob(f"{attempt_id}*.json"))
         if not trace_paths:
+            self.state.reconcile_inference(
+                self.manifest.epoch_id,
+                attempt_id,
+                0,
+                0,
+                0,
+            )
             return
         trace = read_json(trace_paths[-1])
         self.state.reconcile_inference(
@@ -1041,6 +1048,14 @@ class TournamentController:
                             int(trace.get("model_calls", 0)),
                             int(trace.get("prompt_tokens", 0)),
                             int(trace.get("output_tokens", 0)),
+                        )
+                    else:
+                        self.state.reconcile_inference(
+                            self.manifest.epoch_id,
+                            reservation_id,
+                            0,
+                            0,
+                            0,
                         )
                 metadata_path = (
                     self.evidence.epoch_root(self.manifest.epoch_id)

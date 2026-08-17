@@ -245,7 +245,7 @@ The controller:
 9. freezes attempt/cell evidence before marking work complete;
 10. advances to the next round.
 
-The current 12-model catalog plans 36 creator invocations. If every candidate validates, the public tournament contains 1,296 solver cells.
+The current 9-model catalog plans 27 creator invocations. If every candidate validates, the public tournament contains 729 solver cells.
 
 ### Retry and budget behavior
 
