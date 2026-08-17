@@ -23,8 +23,9 @@ class TestCostControls(unittest.TestCase):
             retry_policy=SimpleNamespace(max_attempts=3),
             budget=SimpleNamespace(
                 max_tokens=16000,
-                max_estimated_cost_usd=5000.0,
+                max_estimated_cost_usd=500.0,
             ),
+
         )
         estimate = PriceCatalog().estimate(manifest)
         self.assertTrue(estimate["complete"])

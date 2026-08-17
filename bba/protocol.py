@@ -101,7 +101,7 @@ class ResourceBudget:
     max_epoch_calls: int = 150_000
     max_epoch_input_tokens: int = 150_000_000
     max_epoch_output_tokens: int = 40_000_000
-    max_estimated_cost_usd: float = 5000.0
+    max_estimated_cost_usd: float = 500.0
 
     def __post_init__(self) -> None:
         if min(

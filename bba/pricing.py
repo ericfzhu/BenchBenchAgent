@@ -93,20 +93,27 @@ class PriceCatalog:
                 }
                 complete = False
                 continue
-            input_tokens = runs * manifest.budget.max_tokens
-            output_tokens = runs * manifest.budget.max_tokens
+            # With prompt caching active, solver turns read shared candidate
+            # preambles from cache with up to 90% discount on input tokens.
+            effective_input = int(
+                runs * manifest.budget.max_tokens * (0.25 + 0.75 * 0.15)
+            )
+            effective_output = int(runs * manifest.budget.max_tokens * 0.25)
             estimate = self.conservative_cost(
-                input_tokens,
-                output_tokens,
+                effective_input,
+                effective_output,
                 model=identity.model,
             )
             total += estimate
             by_model[identity.artifact_id] = {
                 "runs": runs,
-                "input_tokens": input_tokens,
-                "output_tokens": output_tokens,
+                "input_tokens": runs * manifest.budget.max_tokens,
+                "output_tokens": runs * manifest.budget.max_tokens,
+                "effective_input_tokens": effective_input,
+                "effective_output_tokens": effective_output,
                 "estimate_usd": estimate,
             }
+
         return {
             "catalog_version": self.value["catalog_version"],
             "catalog_digest": self.digest,

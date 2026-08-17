@@ -93,14 +93,15 @@ class FakeConsole:
             "approved": 1,
             "review_open": True,
             "failed_work": [],
-            "max_estimated_cost_usd": 5000.0,
+            "max_estimated_cost_usd": 500.0,
             "usage": {
                 "calls": 42,
                 "input_tokens": 1000,
                 "output_tokens": 500,
                 "estimated_cost_usd": 12.5,
-                "max_estimated_cost_usd": 5000.0,
+                "max_estimated_cost_usd": 500.0,
             },
+
             "workflow": [
                 {"key": "setup", "label": "Setup", "complete": True, "current": False},
                 {"key": "preflight", "label": "Paid preflight", "complete": True, "current": False},
