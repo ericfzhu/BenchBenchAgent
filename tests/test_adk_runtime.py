@@ -353,7 +353,10 @@ class TestAdkRuntime(unittest.TestCase):
             _tool_call("debrief-early", "submit_debrief", {
                 "debrief_json": json.dumps({"schema_version": 1, "items": []}),
             }),
+            _final("finished without valid predictions"),
         ])
+
+
         backend = AdkSolverBackend(model)
         with tempfile.TemporaryDirectory() as temporary:
             with self.assertRaises(PredictionParseFailure):

@@ -860,12 +860,12 @@ class AdkSolverBackend(_TraceBackend):
                 predictions_json: JSON array of objects with id and answer, or mapping of id to answer.
             """
             if submitted:
-                raise ValueError("predictions are already locked")
+                return {"accepted": False, "error": "predictions are already locked"}
             if isinstance(predictions_json, str):
                 try:
                     rows = json.loads(predictions_json)
                 except json.JSONDecodeError as exc:
-                    raise ValueError(f"predictions_json is invalid: {exc}") from exc
+                    return {"accepted": False, "error": f"predictions_json is invalid JSON: {exc}"}
             else:
                 rows = predictions_json
 
@@ -875,6 +875,13 @@ class AdkSolverBackend(_TraceBackend):
                     rows = rows["predictions"]
                 elif "items" in rows and isinstance(rows["items"], (list, tuple)):
                     rows = rows["items"]
+                elif len(expected_set) == 1 and "answer" in rows and not any(k in expected_set for k in rows):
+                    only_id = next(iter(expected_set))
+                    try:
+                        json.dumps(rows["answer"], allow_nan=False)
+                        parsed[only_id] = rows["answer"]
+                    except Exception:
+                        pass
                 else:
                     for k, v in rows.items():
                         item_id = str(k).strip()
@@ -895,11 +902,18 @@ class AdkSolverBackend(_TraceBackend):
                     parsed[item_id] = row["answer"]
 
             if set(parsed) != expected_set:
-                raise ValueError(f"expected {len(expected_set)} complete predictions, received {len(parsed)}")
+                return {
+                    "accepted": False,
+                    "error": (
+                        f"expected {len(expected_set)} complete predictions matching item IDs "
+                        f"{sorted(expected_set)}, received {len(parsed)}: {sorted(parsed)}. "
+                        "Please pass a JSON array with [{'id': '<item_id>', 'answer': <val>}]"
+                    ),
+                }
             with lock:
                 submitted.clear()
                 submitted.update(parsed)
-            return {"accepted": len(submitted)}
+            return {"accepted": True, "count": len(submitted)}
 
         def submit_debrief(debrief_json: Union[str, Sequence[Any], Dict[str, Any]]) -> Dict[str, Any]:
             """Submit one structured diagnostic after predictions are locked.
@@ -909,14 +923,14 @@ class AdkSolverBackend(_TraceBackend):
             """
             nonlocal submitted_debrief
             if set(submitted) != expected_set:
-                raise ValueError("submit complete predictions before the debrief")
+                return {"accepted": False, "error": "submit complete predictions before the debrief"}
             if submitted_debrief is not None:
-                raise ValueError("the debrief is already locked")
+                return {"accepted": False, "error": "the debrief is already locked"}
             if isinstance(debrief_json, str):
                 try:
                     value = json.loads(debrief_json)
                 except json.JSONDecodeError as exc:
-                    raise ValueError(f"debrief_json is invalid: {exc}") from exc
+                    return {"accepted": False, "error": f"debrief_json is invalid JSON: {exc}"}
             else:
                 value = debrief_json
 
@@ -938,19 +952,26 @@ class AdkSolverBackend(_TraceBackend):
                         else:
                             items_list.append({"item_id": str(k).strip(), "concise_justification": str(v)})
                     value = {"schema_version": 1, "items": items_list}
+                elif len(expected_set) == 1 and ("concise_justification" in value or "decision_strategy" in value):
+                    only_id = next(iter(expected_set))
+                    value = {"schema_version": 1, "items": [{"item_id": only_id, **dict(value)}]}
                 else:
                     value = {"schema_version": 1, "items": []}
             else:
-                raise ValueError("debrief_json must be a JSON object or array")
+                return {"accepted": False, "error": "debrief_json must be a JSON object or array"}
 
-            debrief = _validate_debrief_coverage(
-                solver_debrief_from_mapping(value),
-                expected_set,
-            )
+            try:
+                debrief = _validate_debrief_coverage(
+                    solver_debrief_from_mapping(value),
+                    expected_set,
+                )
+            except Exception as exc:
+                return {"accepted": False, "error": f"invalid debrief coverage: {exc}"}
 
             with lock:
                 submitted_debrief = debrief
-            return {"accepted": len(debrief.items), "predictions_locked": True}
+            return {"accepted": True, "items": len(debrief.items), "predictions_locked": True}
+
 
         agent = Agent(
             name=("solver_" + re.sub(r"\W", "_", identity.artifact_id))[:120],
