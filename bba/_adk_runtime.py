@@ -231,13 +231,11 @@ class _ObservabilityPlugin(BasePlugin):
         else:
             configured = llm_request.config.max_output_tokens
             llm_request.config.max_output_tokens = min(configured or remaining, remaining)
-        for name in ("temperature", "top_p"):
-            value = self.behavior_settings.get(name)
-            if value is not None:
-                setattr(llm_request.config, name, value)
         self.model_calls += 1
+
         self._model_started_ns.append(time.monotonic_ns())
         return None
+
 
     async def after_model_callback(self, *, callback_context, llm_response):
         if self._model_started_ns:

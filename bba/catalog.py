@@ -22,11 +22,10 @@ def _model(
         adk_model=adk_model,
         reasoning="explicit-supported-settings-v1",
         behavior_settings={
-            "temperature": 0.0,
-            "top_p": 1.0,
             "reasoning_effort": "unsupported_or_model_defined",
         },
         tools=("function-calling",),
+
     )
 
 

@@ -110,12 +110,9 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
                 configured or remaining,
                 remaining,
             )
-        for name in ("temperature", "top_p"):
-            value = self.behavior_settings.get(name)
-            if value is not None:
-                setattr(llm_request.config, name, value)
 
         if self._quota_governor is not None:
+
             if self._quota_lease is not None:
                 raise RuntimeError(
                     "the previous model quota lease was not reconciled"
