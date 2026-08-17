@@ -37,6 +37,7 @@ BOUND_MODULES = (
     "replay.py",
     "runtime.py",
     "scoring.py",
+    "session_budget.py",
     "_state.py",
     "state.py",
     "_tournament.py",
@@ -69,7 +70,9 @@ def build_evaluator_identity(
     components["dependency-wheel-catalog"] = file_digest(
         package_root / "data" / "dependency-wheels" / "catalog.json"
     )
-    components["price-catalog"] = file_digest(package_root / "data" / "price-catalog.json")
+    components["price-catalog"] = file_digest(
+        package_root / "data" / "price-catalog.json"
+    )
     runtime = {
         "python": sys.version,
         "distributions": {

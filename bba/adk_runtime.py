@@ -1,4 +1,4 @@
-"""Google ADK runtime with project-aware Vertex quota governance."""
+"""Google ADK runtime with dependency and Vertex quota governance."""
 
 from __future__ import annotations
 
@@ -8,12 +8,10 @@ from typing import Any
 
 from google.genai import types
 
-import os
-
 from bba import _adk_runtime as _core
 from bba._adk_runtime import *  # noqa: F401,F403
 from bba.quota_project import ModelCallQuotaLease, QuotaGovernor
-
+from bba.session_budget import agent_session_budget_from_values
 
 
 CREATOR_DEPENDENCY_POLICY = """The approved candidate dependency catalog is empty.
@@ -79,10 +77,15 @@ _core.AdkCreatorBackend = AdkCreatorBackend
 
 
 class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
-    """Apply model budgets and acquire quota capacity before each model call."""
+    """Enforce one session token contract and pace every provider model call."""
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:
+        max_llm_calls = int(kwargs.get("max_llm_calls", 64))
         super().__init__(*args, **kwargs)
+        self._session_budget = agent_session_budget_from_values(
+            self.per_call_max_tokens,
+            max_llm_calls,
+        )
         store = getattr(self, "store", None)
         self._quota_governor = None
         if store is not None:
@@ -92,15 +95,43 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
                 )
             except Exception:
                 self._quota_governor = None
-
         self._quota_lease: ModelCallQuotaLease | None = None
 
-
     async def before_model_callback(self, *, callback_context, llm_request):
-        await super().before_model_callback(
-            callback_context=callback_context,
-            llm_request=llm_request,
+        remaining_input = (
+            self._session_budget.max_session_input_tokens - self.prompt_tokens
         )
+        remaining_output = (
+            self._session_budget.max_session_output_tokens - self.output_tokens
+        )
+        if remaining_input <= 0 or remaining_output <= 0:
+            raise RuntimeError("frozen ADK session token budget exhausted")
+
+        if llm_request.config is None:
+            llm_request.config = types.GenerateContentConfig()
+        configured = llm_request.config.max_output_tokens
+        requested_output = min(
+            int(configured or self._session_budget.max_output_tokens_per_call),
+            self._session_budget.max_output_tokens_per_call,
+            remaining_output,
+        )
+        llm_request.config.max_output_tokens = requested_output
+
+        # ADK 2.6.3 handles this setting for Gemini and safely ignores it in
+        # adapters that do not implement explicit context caching.
+        try:
+            from google.adk.models.llm_request import ContextCacheConfig
+
+            if getattr(llm_request, "cache_config", None) is None:
+                llm_request.cache_config = ContextCacheConfig(
+                    cache_intervals=1,
+                    ttl_seconds=3600,
+                    min_tokens=1024,
+                    create_http_options=None,
+                )
+        except (ImportError, TypeError, AttributeError):
+            pass
+
         if self._quota_governor is not None:
             if self._quota_lease is not None:
                 raise RuntimeError(
@@ -109,34 +140,53 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
             estimated_input = self._quota_governor.estimate_input_tokens(
                 llm_request
             )
-            requested_output = int(
-                llm_request.config.max_output_tokens or self.per_call_max_tokens
-            )
+            if estimated_input > remaining_input:
+                raise RuntimeError(
+                    "the next model call would exceed the frozen session input budget"
+                )
             lease = await asyncio.to_thread(
                 self._quota_governor.acquire_model_call,
                 self.identity,
                 estimated_input,
                 requested_output,
             )
-            llm_request.config.max_output_tokens = lease.output_cap
+            llm_request.config.max_output_tokens = min(
+                requested_output,
+                lease.output_cap,
+            )
             self._quota_lease = lease
+
+        # Quota waiting is infrastructure time and is deliberately excluded
+        # from provider model latency.
+        self.model_calls += 1
+        self._model_started_ns.append(time.monotonic_ns())
         return None
-
-
 
     async def after_model_callback(self, *, callback_context, llm_response):
         usage = llm_response.usage_metadata
-        input_tokens = int(
-            getattr(usage, "prompt_token_count", 0) or 0
-        ) if usage is not None else 0
-        output_tokens = int(
-            getattr(usage, "candidates_token_count", 0) or 0
-        ) if usage is not None else 0
+        input_tokens = (
+            int(getattr(usage, "prompt_token_count", 0) or 0)
+            if usage is not None
+            else 0
+        )
+        output_tokens = (
+            int(getattr(usage, "candidates_token_count", 0) or 0)
+            if usage is not None
+            else 0
+        )
         try:
-            return await super().after_model_callback(
+            result = await super().after_model_callback(
                 callback_context=callback_context,
                 llm_response=llm_response,
             )
+            if (
+                self.prompt_tokens
+                > self._session_budget.max_session_input_tokens
+                or self.output_tokens
+                > self._session_budget.max_session_output_tokens
+            ):
+                raise RuntimeError("frozen ADK session token budget exceeded")
+            return result
         finally:
             if self._quota_governor is not None and self._quota_lease:
                 lease = self._quota_lease
@@ -184,12 +234,11 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
 
 
 # _run_agent lives in the implementation module and resolves this global at
-# call time. Replacing it here applies the governor to creator, solver, preflight,
-# and sealed-audit model turns without duplicating backend logic.
+# call time. Replacing it here applies the contract to creator, solver,
+# preflight, and sealed-audit model turns without duplicating backend logic.
 _core._ObservabilityPlugin = _QuotaObservabilityPlugin
 _ObservabilityPlugin = _QuotaObservabilityPlugin
 
 
 def __getattr__(name: str) -> Any:
     return getattr(_core, name)
-
