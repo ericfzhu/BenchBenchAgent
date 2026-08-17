@@ -1,4 +1,4 @@
-"""Google ADK runtime with dependency and Vertex quota governance."""
+"""Google ADK runtime with dependency and fail-closed quota governance."""
 
 from __future__ import annotations
 
@@ -10,9 +10,14 @@ from google.genai import types
 
 from bba import _adk_runtime as _core
 from bba._adk_runtime import *  # noqa: F401,F403
+from bba.catalog import SERVERLESS_COHORT
 from bba.quota_project import ModelCallQuotaLease, QuotaGovernor
 from bba.session_budget import agent_session_budget_from_values
 
+
+_GOVERNED_MODEL_ROUTES = frozenset(
+    (identity.publisher, identity.model) for identity in SERVERLESS_COHORT
+)
 
 CREATOR_DEPENDENCY_POLICY = """The approved candidate dependency catalog is empty.
 Use only the Python standard library. requirements.lock must be empty or contain
@@ -87,14 +92,19 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
             max_llm_calls,
         )
         store = getattr(self, "store", None)
-        self._quota_governor = None
-        if store is not None:
-            try:
-                self._quota_governor = QuotaGovernor.from_environment(
-                    store.evidence_root
-                )
-            except Exception:
-                self._quota_governor = None
+        governed = (
+            self.identity.publisher,
+            self.identity.model,
+        ) in _GOVERNED_MODEL_ROUTES
+        if governed and store is None:
+            raise RuntimeError(
+                "frozen catalog routes require an evidence-backed quota governor"
+            )
+        self._quota_governor = (
+            QuotaGovernor.from_environment(store.evidence_root)
+            if governed
+            else None
+        )
         self._quota_lease: ModelCallQuotaLease | None = None
 
     async def before_model_callback(self, *, callback_context, llm_request):
