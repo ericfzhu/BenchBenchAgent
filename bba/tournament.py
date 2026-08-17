@@ -6,6 +6,7 @@ from typing import Any
 
 from bba._tournament import *  # noqa: F401,F403
 from bba._tournament import TournamentController as _TournamentController
+from bba.pricing import model_cost_context
 from bba.registry import PromotionRegistry
 from bba.session_budget import agent_session_budget
 
@@ -13,13 +14,41 @@ from bba.session_budget import agent_session_budget
 class _SessionBudgetState:
     """Translate logical ADK reservations into the frozen session envelope."""
 
-    def __init__(self, state: Any, resource_budget: Any) -> None:
+    def __init__(
+        self,
+        state: Any,
+        resource_budget: Any,
+        cohort,
+        *,
+        cost_exempt: bool = False,
+    ) -> None:
         self._state = state
         self._resource_budget = resource_budget
         self._session = agent_session_budget(resource_budget)
+        self._cohort = tuple(cohort)
+        self._cost_exempt = bool(cost_exempt)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._state, name)
+
+    def _model_for_reservation(self, reservation_id: str) -> str:
+        """Recover the exact price key from the frozen identity in the ID."""
+
+        value = str(reservation_id)
+        for identity in self._cohort:
+            if identity.artifact_id in value:
+                return identity.model
+
+        # Hidden-audit identities change only the scaffold segment, so match
+        # their stable publisher/model prefix against the immutable attempt ID.
+        for identity in self._cohort:
+            prefix = f"gcp__{identity.publisher}__{identity.model}__"
+            if prefix in value:
+                return identity.model
+        raise RuntimeError(
+            "could not attribute inference reservation to a frozen model route: "
+            + value
+        )
 
     def reserve_inference(
         self,
@@ -29,6 +58,8 @@ class _SessionBudgetState:
         input_tokens: int,
         output_tokens: int,
         limits,
+        *,
+        model: str | None = None,
     ) -> None:
         """Reserve the same cumulative limits enforced by the ADK plugin."""
 
@@ -39,14 +70,42 @@ class _SessionBudgetState:
         ):
             input_tokens = self._session.max_session_input_tokens
             output_tokens = self._session.max_session_output_tokens
-        self._state.reserve_inference(
-            epoch_id,
-            reservation_id,
-            calls,
-            input_tokens,
-            output_tokens,
-            limits,
-        )
+        selected_model = model or self._model_for_reservation(reservation_id)
+        with model_cost_context(
+            selected_model,
+            cost_exempt=self._cost_exempt,
+        ):
+            self._state.reserve_inference(
+                epoch_id,
+                reservation_id,
+                calls,
+                input_tokens,
+                output_tokens,
+                limits,
+            )
+
+    def reconcile_inference(
+        self,
+        epoch_id: str,
+        reservation_id: str,
+        calls: int,
+        input_tokens: int,
+        output_tokens: int,
+    ) -> None:
+        """Reconcile using the same exact route that priced the reservation."""
+
+        selected_model = self._model_for_reservation(reservation_id)
+        with model_cost_context(
+            selected_model,
+            cost_exempt=self._cost_exempt,
+        ):
+            self._state.reconcile_inference(
+                epoch_id,
+                reservation_id,
+                calls,
+                input_tokens,
+                output_tokens,
+            )
 
 
 class TournamentController(_TournamentController):
@@ -55,7 +114,14 @@ class TournamentController(_TournamentController):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         if not isinstance(self.state, _SessionBudgetState):
-            self.state = _SessionBudgetState(self.state, self.manifest.budget)
+            self.state = _SessionBudgetState(
+                self.state,
+                self.manifest.budget,
+                self.manifest.cohort,
+                cost_exempt=(
+                    self.manifest.sandbox.backend == "trusted-fixture-only"
+                ),
+            )
 
     def _require_review_window_open(self) -> None:
         checker = getattr(self.evidence, "review_window_closed", None)

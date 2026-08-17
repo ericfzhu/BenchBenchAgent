@@ -1,80 +1,74 @@
-# BBA Prompt Caching Architecture & Cost Optimization
+# BBA prompt caching and cost accounting
 
-This document outlines the prompt caching implementation in BenchBenchAgent (BBA), detailing the architectural design, provider-specific mechanisms, telemetry tracking, and the mathematical rationale for why it was implemented.
+Prompt caching is an opportunistic latency and billing optimization. It is not a
+correctness dependency and it is not used to justify BBA's hard USD limit.
 
----
+## Runtime behavior
 
-## 1. Executive Summary & Rationale
+Before an ADK model turn, BBA attaches a `ContextCacheConfig` when the installed
+ADK request type supports it. In Google ADK 2.6.3, the explicit cache lifecycle
+is implemented by the Gemini adapter. Other providers may apply their own
+implicit prefix caching, but BBA does not assume that they do.
 
-In BBA's autonomous two-sided adversarial benchmark co-evolution tournament:
-1. **Shared Candidate Problem Space**: Each Creator agent generates a complex benchmark candidate containing rich scenario specifications, financial transaction ledgers, receipts, voided invoice data, and evaluation rubrics. This candidate dataset is evaluated across **9 solver models with 3 repetitions each ($9 \times 3 = 27$ solver runs per candidate)**.
-2. **Multi-Turn Agent Trajectories**: Each solver operates inside a sandboxed Python REPL environment, taking multiple iterative tool turns (inspecting files, running analysis scripts, submitting predictions, debriefing). In multi-turn agent workflows, each subsequent turn re-transmits the full conversation prefix (problem preamble, tool definitions, and prior execution steps).
+After each response, BBA records provider-reported prompt, output, total, and
+cached-token metadata when those fields are available. Content is never copied
+into the observability records.
 
-### The Cost Challenge
-Without prompt caching:
-* Input tokens account for **85% to 90%** of total token volume across an epoch.
-* High-capability frontier models (such as `claude-opus-5`, `claude-opus-4-8`, `claude-opus-4-7`) cost \$15.00 / MTok for standard input tokens on Vertex AI.
-* Across all tournament matrix cells, repetitive transmission of identical problem statements produced high worst-case cost estimates (>\$1,500).
+Cache creation may be skipped when:
 
-### The Solution
-Prompt caching enables model providers to persist pre-computed key-value (KV) attention states for identical token prefixes in GPU memory across turns and runs. By caching static problem definitions, tool contracts, and early conversation history:
-* **Anthropic Claude (Opus & Sonnet)**: Cached input reads receive a **90% discount** (\$1.50 / MTok on Opus vs. \$15.00 / MTok; \$0.30 / MTok on Sonnet vs. \$3.00 / MTok).
-* **Google Gemini (Flash, Pro, Lite)**: Vertex AI Context Caching provides up to a **75% to 90% discount** on cached prompt prefixes exceeding 1,024 tokens.
-* **xAI Grok**: Vertex AI server-side context caching discounts repeated prefix lookups.
+- the stable prefix is below the provider's minimum;
+- the call is the first turn in a session;
+- the provider or adapter does not implement the cache configuration;
+- cache creation expires or fails;
+- the conversation prefix changes.
 
----
+The model call continues without an active cache in those cases.
 
-## 2. Runtime Architecture & Integration
+## Hard cost policy
 
-Prompt caching is integrated directly into BBA's ADK lifecycle hooks in `bba/_adk_runtime.py` and `bba/adk_runtime.py`.
+The frozen price catalog contains ordinary input and output token rates for each
+model route. BBA applies those uncached rates to every reservation and every
+reconciled invocation, then applies the catalog's safety multiplier.
 
-### 2.1 Request-Time Cache Configuration (`before_model_callback`)
-Before each model invocation, the `_ObservabilityPlugin` attaches a `ContextCacheConfig` to `llm_request`:
+This means:
 
-```python
-from google.adk.models.llm_request import ContextCacheConfig
+- the hard runtime ledger never depends on a cache hit;
+- cached tokens do not make additional budget capacity appear;
+- a provider cache failure cannot cause the epoch to exceed its frozen USD
+  ceiling merely because preflight assumed a discount;
+- observed cache savings can be reported separately from the safety-adjusted
+  ledger.
 
-if getattr(llm_request, "cache_config", None) is None:
-    llm_request.cache_config = ContextCacheConfig(
-        cache_intervals=1,
-        ttl_seconds=3600,
-        min_tokens=1024,
-        create_http_options=None,
-    )
-```
+Each production reservation is attributed to the exact model identity embedded
+in its immutable work or attempt ID. Removed or unrelated routes in the
+historical price catalog therefore cannot inflate the cost of an active Grok,
+Gemini, or Claude invocation. Unattributed legacy operations continue to use the
+highest frozen rates and therefore fail safe.
 
-### 2.2 Telemetry & Observability (`after_model_callback`)
-After each turn, provider usage metadata is parsed to record both standard prompt tokens and cached token reads:
+## Planning estimates
 
-```python
-usage = llm_response.usage_metadata
-if usage is not None:
-    self.prompt_tokens += int(getattr(usage, "prompt_token_count", 0) or 0)
-    cached = (
-        getattr(usage, "cached_content_token_count", 0)
-        or getattr(usage, "cache_read_input_tokens", 0)
-        or 0
-    )
-    self.cached_tokens += int(cached or 0)
-    self.output_tokens += int(getattr(usage, "candidates_token_count", 0) or 0)
-    self.total_tokens += int(getattr(usage, "total_token_count", 0) or 0)
-```
+`PriceCatalog.estimate()` publishes four different views:
 
-The resulting telemetry is persisted in `.bba/epochs/<epoch-id>/observability/` for auditing and cost accounting.
+1. **Planning provider cost** — likely uncached token usage at ordinary rates.
+2. **Planning budgeted cost** — the same estimate after the safety multiplier.
+3. **Stress estimate** — high but plausible uncached usage plus solver retry
+   overhead; this is the paid-preflight gate.
+4. **Maximum envelopes** — absolute first-attempt and complete-retry token
+   ceilings. These are diagnostic bounds, not the preflight gate, because the
+   model-specific runtime ledger admits and reconciles work incrementally.
 
----
+The planning and stress assumptions are versioned in
+`bba/data/price-catalog.json` and are included in the evaluator identity.
 
-## 3. Provider Mechanics
+## Current default profiles
 
-| Provider | Mechanism | Minimum Threshold | TTL / Persistence | Read Discount |
-| :--- | :--- | :---: | :---: | :---: |
-| **Anthropic Claude on Vertex AI** | Ephemeral Prompt Caching | 1,024 tokens | 5 min – 1 hr (refreshed on read) | **90% off** |
-| **Google Gemini on Vertex AI** | Context Caching (Implicit & Explicit) | 1,024 tokens | 1 hour default | **75%–90% off** |
-| **xAI Grok on Vertex AI** | Server-side Prefix Caching | 1,024 tokens | Session-scoped | **50%–75% off** |
+For the default 9-model, 3-round, 3-repetition epoch:
 
----
+| Profile | Creator session | Solver session | Solver retry allowance |
+|---|---:|---:|---:|
+| Planning | 70,000 input / 10,000 output | 20,000 / 3,500 | 5% |
+| Stress | 110,000 input / 14,000 output | 45,000 / 7,000 | 10% |
 
-## 4. Verification & Evaluation Integrity
-
-* **Zero Impact on Determinism**: Prompt caching reuses exact attention states without altering temperature, sampling, or token generation probabilities.
-* **Hermetic Sandbox Execution**: Solver tool interactions (reading candidate files, executing REPL code, submitting predictions) execute identically regardless of whether the prefix is served from cache or computed from scratch.
+Neither profile assumes any cached-input discount. Actual work remains bounded
+by the per-session token contract, the epoch token ceilings, the quota governor,
+and the `$500` safety-adjusted runtime ledger.

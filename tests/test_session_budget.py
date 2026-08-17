@@ -1,4 +1,4 @@
-"""Consistent ADK session-token and SQLite reservation tests."""
+"""Consistent ADK session-token and model-attributed reservation tests."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import unittest
 from types import SimpleNamespace
 
 from bba.adk_runtime import _ObservabilityPlugin
+from bba.pricing import PriceCatalog, current_cost_attribution
 from bba.protocol import ModelIdentity
 from bba.session_budget import agent_session_budget
 from bba.tournament import _SessionBudgetState
@@ -15,12 +16,26 @@ from bba.tournament import _SessionBudgetState
 class RecordingState:
     def __init__(self) -> None:
         self.reservations = []
+        self.reconciliations = []
 
     def reserve_inference(self, *args) -> None:
-        self.reservations.append(args)
+        attribution = current_cost_attribution()
+        cost = PriceCatalog().conservative_cost(args[3], args[4])
+        self.reservations.append((args, attribution, cost))
+
+    def reconcile_inference(self, *args) -> None:
+        self.reconciliations.append((args, current_cost_attribution()))
 
 
 class TestSessionBudget(unittest.TestCase):
+    def setUp(self):
+        self.identity = ModelIdentity(
+            "xai",
+            "grok-4.3",
+            "grok",
+            "litellm:vertex_ai/xai/grok-4.3",
+        )
+
     def test_default_contract_is_128k_input_and_16k_output(self):
         value = agent_session_budget(
             SimpleNamespace(max_tokens=16_000, max_llm_calls=64)
@@ -33,38 +48,117 @@ class TestSessionBudget(unittest.TestCase):
     def test_controller_reservation_matches_runtime_session_contract(self):
         state = RecordingState()
         budget = SimpleNamespace(max_tokens=16_000, max_llm_calls=64)
-        proxy = _SessionBudgetState(state, budget)
+        proxy = _SessionBudgetState(state, budget, (self.identity,))
         limits = {
             "calls": 150_000,
             "input_tokens": 150_000_000,
             "output_tokens": 40_000_000,
         }
+        reservation_id = f"cell--{self.identity.artifact_id}--attempt-1"
         proxy.reserve_inference(
             "epoch",
-            "attempt",
+            reservation_id,
             64,
             16_000,
             16_000,
             limits,
         )
-        reservation = state.reservations[0]
-        self.assertEqual(reservation[2:5], (64, 128_000, 16_000))
+        args, attribution, cost = state.reservations[0]
+        self.assertEqual(args[2:5], (64, 128_000, 16_000))
+        self.assertEqual(attribution.model, "grok-4.3")
+        self.assertFalse(attribution.cost_exempt)
+        self.assertAlmostEqual(cost, 0.4, places=6)
 
-    def test_non_agent_reservation_is_not_rewritten(self):
+        proxy.reconcile_inference(
+            "epoch",
+            reservation_id,
+            2,
+            20_000,
+            2_000,
+        )
+        self.assertEqual(
+            state.reconciliations[0][1].model,
+            "grok-4.3",
+        )
+
+    def test_hidden_scaffold_identity_maps_to_the_same_price_key(self):
         state = RecordingState()
         proxy = _SessionBudgetState(
             state,
             SimpleNamespace(max_tokens=16_000, max_llm_calls=64),
+            (self.identity,),
+        )
+        hidden_artifact = (
+            "gcp__xai__grok-4.3__explicit-supported-settings-v1__sealed-v1-abc"
         )
         proxy.reserve_inference(
             "epoch",
-            "manual",
-            1,
-            100,
-            50,
-            {"calls": 10, "input_tokens": 1000, "output_tokens": 1000},
+            f"snapshot--{hidden_artifact}--r0--attempt-1",
+            64,
+            16_000,
+            16_000,
+            {
+                "calls": 150_000,
+                "input_tokens": 150_000_000,
+                "output_tokens": 40_000_000,
+            },
         )
-        self.assertEqual(state.reservations[0][2:5], (1, 100, 50))
+        self.assertEqual(
+            state.reservations[0][1].model,
+            "grok-4.3",
+        )
+
+    def test_trusted_fixture_controller_marks_unknown_models_cost_exempt(self):
+        fixture = ModelIdentity(
+            "test",
+            "fixture-model",
+            "test",
+            "litellm:test/fixture-model",
+        )
+        state = RecordingState()
+        proxy = _SessionBudgetState(
+            state,
+            SimpleNamespace(max_tokens=16_000, max_llm_calls=64),
+            (fixture,),
+            cost_exempt=True,
+        )
+        proxy.reserve_inference(
+            "epoch",
+            f"cell--{fixture.artifact_id}--attempt-1",
+            64,
+            16_000,
+            16_000,
+            {
+                "calls": 150_000,
+                "input_tokens": 150_000_000,
+                "output_tokens": 40_000_000,
+            },
+        )
+        _, attribution, cost = state.reservations[0]
+        self.assertEqual(attribution.model, "fixture-model")
+        self.assertTrue(attribution.cost_exempt)
+        self.assertEqual(cost, 0.0)
+
+    def test_unknown_reservation_identity_fails_closed(self):
+        state = RecordingState()
+        proxy = _SessionBudgetState(
+            state,
+            SimpleNamespace(max_tokens=16_000, max_llm_calls=64),
+            (self.identity,),
+        )
+        with self.assertRaisesRegex(RuntimeError, "attribute inference"):
+            proxy.reserve_inference(
+                "epoch",
+                "unknown-attempt",
+                64,
+                16_000,
+                16_000,
+                {
+                    "calls": 150_000,
+                    "input_tokens": 150_000_000,
+                    "output_tokens": 40_000_000,
+                },
+            )
 
     def test_plugin_caps_later_turn_by_remaining_session_output(self):
         identity = ModelIdentity(

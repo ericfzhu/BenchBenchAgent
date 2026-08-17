@@ -1,4 +1,4 @@
-"""Paid readiness check with a frozen price and cost gate."""
+"""Paid readiness check with a frozen, model-specific cost gate."""
 
 from __future__ import annotations
 
@@ -22,9 +22,9 @@ def run_preflight(manifest, evidence, solver_backends=None):
             )
         if not estimate["within_hard_limit"]:
             raise RuntimeError(
-                "the conservative epoch estimate exceeds the frozen USD limit: "
-                f"${estimate['conservative_estimate_usd']:.2f} > "
-                f"${estimate['hard_limit_usd']:.2f}"
+                "the uncached stress-planning estimate exceeds the frozen USD "
+                f"limit: ${estimate['stress_estimate_usd']:.2f} > "
+                f"${estimate['hard_limit_usd']:.2f}. The exact-route runtime "
+                "ledger is the authoritative hard stop."
             )
     return _run_preflight(manifest, evidence, solver_backends)
-

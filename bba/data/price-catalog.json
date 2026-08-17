@@ -1,10 +1,28 @@
 {
   "schema_version": 1,
-  "catalog_version": "gcp-serverless-prices-2026-08-16",
-  "effective_date": "2026-08-16",
+  "catalog_version": "gcp-serverless-prices-2026-08-17-v2",
+  "effective_date": "2026-08-17",
   "currency": "USD",
   "billing_unit": "one_million_tokens",
   "safety_multiplier": 2.0,
+  "planning_profiles": {
+    "planning": {
+      "description": "Likely uncached usage for a complete first-attempt epoch plus five percent solver retry overhead.",
+      "creator_input_tokens": 70000,
+      "creator_output_tokens": 10000,
+      "solver_input_tokens": 20000,
+      "solver_output_tokens": 3500,
+      "solver_retry_rate": 0.05
+    },
+    "stress": {
+      "description": "High but plausible uncached usage for a complete epoch plus ten percent solver retry overhead.",
+      "creator_input_tokens": 110000,
+      "creator_output_tokens": 14000,
+      "solver_input_tokens": 45000,
+      "solver_output_tokens": 7000,
+      "solver_retry_rate": 0.1
+    }
+  },
   "models": {
     "gemini-3.6-flash": {
       "input_per_million_usd": 1.5,
@@ -55,5 +73,5 @@
       "output_per_million_usd": 2.5
     }
   },
-  "note": "Global standard serverless token rates. The frozen 2x safety multiplier covers long-context and pricing-tier uncertainty. This is a conservative controller budget guard, not a replacement for Google Cloud billing exports."
+  "note": "Frozen global serverless token rates. Planning profiles do not assume prompt-cache discounts. The 2x safety multiplier is applied by the hard runtime ledger; cache savings are observational only."
 }
