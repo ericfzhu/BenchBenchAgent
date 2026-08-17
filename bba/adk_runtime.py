@@ -97,22 +97,12 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
 
 
     async def before_model_callback(self, *, callback_context, llm_request):
+        await super().before_model_callback(
+            callback_context=callback_context,
+            llm_request=llm_request,
+        )
         remaining = self.token_budget - self.total_tokens
-        if remaining <= 0:
-            raise RuntimeError("frozen ADK token budget exhausted")
-        if llm_request.config is None:
-            llm_request.config = types.GenerateContentConfig(
-                max_output_tokens=remaining
-            )
-        else:
-            configured = llm_request.config.max_output_tokens
-            llm_request.config.max_output_tokens = min(
-                configured or remaining,
-                remaining,
-            )
-
         if self._quota_governor is not None:
-
             if self._quota_lease is not None:
                 raise RuntimeError(
                     "the previous model quota lease was not reconciled"
@@ -131,11 +121,8 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
             )
             llm_request.config.max_output_tokens = lease.output_cap
             self._quota_lease = lease
-
-        # Quota waiting is infrastructure time, not model latency.
-        self.model_calls += 1
-        self._model_started_ns.append(time.monotonic_ns())
         return None
+
 
     async def after_model_callback(self, *, callback_context, llm_response):
         usage = llm_response.usage_metadata

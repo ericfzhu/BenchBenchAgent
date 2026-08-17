@@ -164,6 +164,7 @@ class _ObservabilityPlugin(BasePlugin):
         self.event_digests: list[str] = []
         self.final_response_digest = None
         self.prompt_tokens = 0
+        self.cached_tokens = 0
         self.output_tokens = 0
         self.total_tokens = 0
         self.response_model_versions: list[str] = []
@@ -194,6 +195,7 @@ class _ObservabilityPlugin(BasePlugin):
             "tool_calls": tuple(self.tool_calls),
             "event_count": len(self.event_digests),
             "prompt_tokens": self.prompt_tokens,
+            "cached_tokens": self.cached_tokens,
             "output_tokens": self.output_tokens,
             "total_tokens": self.total_tokens,
             "usage_metadata_complete": self.usage_reports == self.model_calls,
@@ -231,11 +233,23 @@ class _ObservabilityPlugin(BasePlugin):
         else:
             configured = llm_request.config.max_output_tokens
             llm_request.config.max_output_tokens = min(configured or remaining, remaining)
-        self.model_calls += 1
 
+        # Enable prompt caching across supported providers
+        try:
+            from google.adk.models.llm_request import ContextCacheConfig
+            if getattr(llm_request, "cache_config", None) is None:
+                llm_request.cache_config = ContextCacheConfig(
+                    cache_intervals=1,
+                    ttl_seconds=3600,
+                    min_tokens=1024,
+                    create_http_options=None,
+                )
+        except (ImportError, TypeError, AttributeError):
+            pass
+
+        self.model_calls += 1
         self._model_started_ns.append(time.monotonic_ns())
         return None
-
 
     async def after_model_callback(self, *, callback_context, llm_response):
         if self._model_started_ns:
@@ -248,11 +262,18 @@ class _ObservabilityPlugin(BasePlugin):
         if usage is not None:
             self.usage_reports += 1
             self.prompt_tokens += int(getattr(usage, "prompt_token_count", 0) or 0)
+            cached = (
+                getattr(usage, "cached_content_token_count", 0)
+                or getattr(usage, "cache_read_input_tokens", 0)
+                or 0
+            )
+            self.cached_tokens += int(cached or 0)
             self.output_tokens += int(getattr(usage, "candidates_token_count", 0) or 0)
             self.total_tokens += int(getattr(usage, "total_token_count", 0) or 0)
             if self.total_tokens > self.token_budget:
                 raise RuntimeError("frozen ADK token budget exceeded")
         return None
+
 
     async def on_model_error_callback(self, *, callback_context, llm_request, error):
         if self._model_started_ns:

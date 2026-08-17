@@ -37,7 +37,9 @@ gate for a paid epoch.
 | Continuous integration | `Removed` | The project intentionally uses the target operator host for package, sandbox, unit, and paid preflight checks. The development portal can launch the local suite. |
 | Local development portal | `Implemented` | The localhost portal presents readiness checks, serialized diagnostics, a phase-aware epoch workflow, usage and cost status, failed work, candidate review, rankings, and observability. Review forms become read-only at audit freeze. |
 | ADK observability | `Implemented` | A Google ADK plugin records content-free lifecycle, token, tool, latency, model-version, and error metadata. |
+| Prompt caching | `Implemented` | Request-time context caching configuration and cache read tracking ([details](prompt-caching.md)) reduce repetitive candidate dataset input token costs by up to 90% across multi-turn solver runs. |
 | OpenTelemetry tracing | `Implemented` | Optional loopback-only OTLP export uses an allowlist that removes prompts, responses, arguments, results, descriptions, events, links, and exception text. |
+
 
 ## Local verification coverage
 

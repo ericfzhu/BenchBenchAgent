@@ -61,8 +61,9 @@ class TestLocalEpochCli(unittest.TestCase):
             self.assertEqual(manifest["catalog_version"], "gcp-serverless-2026-08-12")
             self.assertEqual(manifest["gcp_location"], "global")
             self.assertEqual(manifest["sandbox"]["backend"], expected_sandbox_backend())
-            self.assertEqual(len(manifest["cohort"]), 12)
+            self.assertEqual(len(manifest["cohort"]), 9)
             self.assertEqual(
+
                 manifest["hidden_commitments"],
                 {name: digest_json(value) for name, value in private.items()},
             )

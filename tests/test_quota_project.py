@@ -83,20 +83,24 @@ class TestProjectResourceResolution(unittest.TestCase):
         self.assertEqual(len(session.calls), 1)
         self.assertIn("projects/123456789012/services/", session.calls[0][0])
 
-    def test_resolution_error_explains_manual_project_number_override(self):
+    def test_resolution_falls_back_to_project_id_on_resource_manager_failure(self):
         session = FakeSession([
             FakeResponse(403, text="permission denied"),
+            FakeResponse(200, {"metrics": []}),
         ])
         discovery = VertexQuotaDiscovery(
             "example-project",
             credentials_loader=lambda **_kwargs: (object(), "example-project"),
             session_factory=lambda _credentials: session,
         )
-        with self.assertRaisesRegex(
-            QuotaDiscoveryError,
-            "BBA_GCP_PROJECT_NUMBER",
-        ):
-            discovery._metrics()
+        self.assertEqual(discovery._metrics(), [])
+        self.assertEqual(
+            session.calls[1][0],
+            "https://serviceusage.googleapis.com/v1beta1/projects/"
+            "example-project/services/aiplatform.googleapis.com/"
+            "consumerQuotaMetrics",
+        )
+
 
 
 if __name__ == "__main__":
