@@ -1,7 +1,8 @@
-"""Public evidence API with phase-bound review immutability guards."""
+"""Public evidence API with contained epoch paths and review immutability guards."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -10,14 +11,37 @@ from bba._evidence import EvidenceStore as _EvidenceStore
 from bba.protocol import SolvabilityCertificate
 
 
-class EvidenceStore(_EvidenceStore):
-    """Evidence store that closes human-input surfaces before audit freezing.
+_EPOCH_ID_PATTERN = re.compile(r"[a-zA-Z0-9._-]{1,100}")
 
-    Existing immutable records remain idempotently replayable after the review
-    window closes. New certificates and promotion records are rejected once the
-    public audit population has been frozen, and therefore cannot alter the
-    public or sealed evaluation after its inputs have been committed.
-    """
+
+def validate_epoch_id(epoch_id: str) -> str:
+    """Return one filesystem-safe epoch identifier, rejecting path components."""
+
+    value = str(epoch_id).strip()
+    if (
+        value in {".", ".."}
+        or _EPOCH_ID_PATTERN.fullmatch(value) is None
+    ):
+        raise ValueError(
+            "epoch ID must use 1 to 100 letters, numbers, dots, dashes, or "
+            "underscores and cannot be '.' or '..'"
+        )
+    return value
+
+
+class EvidenceStore(_EvidenceStore):
+    """Evidence store with contained epoch paths and frozen review inputs."""
+
+    def epoch_root(self, epoch_id: str) -> Path:
+        """Return a direct child of ``epochs`` and reject symlink escapes."""
+
+        value = validate_epoch_id(epoch_id)
+        epochs_root = (self.root / "epochs").resolve()
+        candidate = epochs_root / value
+        resolved = candidate.resolve(strict=False)
+        if resolved.parent != epochs_root:
+            raise ValueError("epoch path must remain a direct child of the evidence root")
+        return resolved
 
     def review_window_closed(self, epoch_id: str) -> bool:
         root = self.epoch_root(epoch_id)
