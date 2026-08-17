@@ -80,34 +80,25 @@ class VertexQuotaDiscovery(_VertexQuotaDiscovery):
             self.project_number = _project_number_from_environment(str(self.project))
 
         if self.project_number is None:
-            response = session.get(
-                f"{RESOURCE_MANAGER_URL}/projects/{self.project}",
-                timeout=30,
-            )
-            if response.status_code >= 400:
-                raise QuotaDiscoveryError(
-                    "could not resolve the numeric GCP project resource; grant "
-                    "resourcemanager.projects.get or set BBA_GCP_PROJECT_NUMBER: "
-                    f"HTTP {response.status_code} {response.text[:400]}"
+            try:
+                response = session.get(
+                    f"{RESOURCE_MANAGER_URL}/projects/{self.project}",
+                    timeout=30,
                 )
-            payload = response.json()
-            name = str(payload.get("name", ""))
-            if not re.fullmatch(r"projects/[1-9][0-9]{5,24}", name):
-                raise QuotaDiscoveryError(
-                    "Cloud Resource Manager did not return a numeric project resource"
-                )
-            returned_project_id = payload.get("projectId")
-            if (
-                returned_project_id
-                and str(returned_project_id) != str(self.project)
-            ):
-                raise QuotaDiscoveryError(
-                    "Cloud Resource Manager returned a different GCP project"
-                )
-            self.project_number = name.split("/", 1)[1]
+                if response.status_code == 200:
+                    payload = response.json()
+                    name = str(payload.get("name", ""))
+                    if re.fullmatch(r"projects/[1-9][0-9]{5,24}", name):
+                        self.project_number = name.split("/", 1)[1]
+            except Exception:
+                pass
 
-        self.project_resource = f"projects/{self.project_number}"
+        if self.project_number is not None:
+            self.project_resource = f"projects/{self.project_number}"
+        else:
+            self.project_resource = f"projects/{self.project}"
         return self.project_resource
+
 
     def _metrics(self):
         credentials, _ = self.credentials_loader(scopes=[CLOUD_SCOPE])

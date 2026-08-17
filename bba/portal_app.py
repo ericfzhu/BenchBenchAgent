@@ -81,8 +81,11 @@ def create_app(console: OperatorConsole):
     for path in ("/", "/epochs/{epoch_id}", "/jobs"):
         _drop_get_route(app, path)
 
-    def fail(title: str, message: str, status: int = 400) -> HTMLResponse:
-        body = '<div class="page-head"><div><div class="eyebrow">Request stopped</div><h1>%s</h1><p class="subtitle">%s</p></div></div><a class="button secondary" href="/">Return to workspace</a>' % (_e(title), _e(message))
+    def fail(title: str, message: str, status: int = 400, epoch_id: str | None = None) -> HTMLResponse:
+        delete_btn = ""
+        if epoch_id:
+            delete_btn = f'<form method="post" action="/epochs/{_u(epoch_id)}/delete" style="display:inline-block;margin-left:12px">{_csrf(app.state.csrf_token)}<button class="button danger" type="submit" onclick="return confirm(\'Delete this epoch?\')">Delete this epoch</button></form>'
+        body = f'<div class="page-head"><div><div class="eyebrow">Request stopped</div><h1>{_e(title)}</h1><p class="subtitle">{_e(message)}</p></div></div><div class="button-row"><a class="button secondary" href="/">Return to workspace</a>{delete_btn}</div>'
         return HTMLResponse(_layout(title, body), status_code=status)
 
     def verify_csrf(token: str) -> None:
@@ -108,8 +111,8 @@ def create_app(console: OperatorConsole):
             for action, label in console.DIAGNOSTIC_ACTIONS.items()
         )
         epoch_cards = "".join(
-            '<article class="card span-4 epoch-card"><div class="epoch-card-top"><div><div class="metric-label">%s</div><h3><a href="%s">%s</a></h3></div>%s</div><div class="progress"><span style="width:%d%%"></span></div><div class="badge-line"><span class="muted">%s snapshots</span><span class="muted">·</span><span class="muted">%s solver cells</span></div><a class="button secondary" href="%s">Open epoch</a></article>' % (
-                _e(item.get("catalog_version", "Saved epoch")), _epoch_link(item["epoch_id"]), _e(item["epoch_id"]), _chip(item.get("phase", "unknown")), _phase_percent(item.get("phase", "")), _e(item.get("snapshots", 0)), _e(item.get("solver_cells", 0)), _epoch_link(item["epoch_id"]),
+            '<article class="card span-4 epoch-card"><div class="epoch-card-top"><div><div class="metric-label">%s</div><h3><a href="%s">%s</a></h3></div>%s</div><div class="progress"><span style="width:%d%%"></span></div><div class="badge-line"><span class="muted">%s snapshots</span><span class="muted">·</span><span class="muted">%s solver cells</span></div><div class="button-row" style="margin-top:auto"><a class="button secondary" href="%s">Open</a><form method="post" action="/epochs/%s/delete" style="margin:0">%s<button class="button ghost" style="color:var(--bad);border:1px solid var(--line);min-height:36px;padding:0 12px;font-size:12px" type="submit" onclick="return confirm(\'Delete this epoch and its evidence?\')">Delete</button></form></div></article>' % (
+                _e(item.get("catalog_version", "Saved epoch")), _epoch_link(item["epoch_id"]), _e(item["epoch_id"]), _chip(item.get("phase", "unknown")), _phase_percent(item.get("phase", "")), _e(item.get("snapshots", 0)), _e(item.get("solver_cells", 0)), _epoch_link(item["epoch_id"]), _u(item["epoch_id"]), _csrf(request.app.state.csrf_token),
             )
             for item in epochs
         ) or '<div class="card span-12 empty">No epoch exists yet. Create one after the required readiness checks pass.</div>'
@@ -133,12 +136,22 @@ def create_app(console: OperatorConsole):
         except Exception as exc:
             return fail("Could not start the diagnostic", str(exc))
 
+    @app.post("/epochs/{epoch_id}/delete")
+    def delete_epoch_route(request: Request, epoch_id: str, csrf_token: str = Form(...)):
+        try:
+            verify_csrf(csrf_token)
+            console.delete_epoch(epoch_id)
+            return RedirectResponse("/", status_code=303)
+        except Exception as exc:
+            return fail("Could not delete the epoch", str(exc))
+
     @app.get("/epochs/{epoch_id}", response_class=HTMLResponse)
     def epoch_control(request: Request, epoch_id: str):
         try:
             value = console.epoch(epoch_id)
         except Exception as exc:
-            return fail("Could not read the epoch", str(exc), 404)
+            return fail("Could not read the epoch", str(exc), 404, epoch_id=epoch_id)
+
         active_job = next((item for item in console.jobs.recent() if item["epoch_id"] == epoch_id and item["status"] in {"queued", "running"}), None)
         workflow = "".join(
             '<div class="workflow-step %s"><div class="index">Step %d</div><strong>%s</strong><div class="mini">%s</div></div>' % (

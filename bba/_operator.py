@@ -334,6 +334,17 @@ class OperatorConsole:
             ]),
         )
 
+    def delete_epoch(self, epoch_id: str) -> None:
+        epoch_id = self.validate_epoch_id(epoch_id)
+        import shutil
+        from bba.state import local_file_lock
+        with local_file_lock(self.evidence.root, f"epoch-{epoch_id}"):
+            root = self.evidence.epoch_root(epoch_id)
+            if root.exists():
+                shutil.rmtree(root)
+            self.state.delete_epoch(epoch_id)
+
+
     def run_epoch_action(self, epoch_id: str, action: str) -> OperatorJob:
         epoch_id = self.validate_epoch_id(epoch_id)
         if action not in self.EPOCH_ACTIONS:

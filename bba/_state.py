@@ -551,3 +551,24 @@ class LocalStateStore:
                 "failed_work": failed,
                 "updated_at": epoch["updated_at"],
             }
+
+    def delete_epoch(self, epoch_id: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "DELETE FROM inference_reservations WHERE epoch_id = ?",
+                (epoch_id,),
+            )
+            connection.execute(
+                "DELETE FROM attempts WHERE epoch_id = ?",
+                (epoch_id,),
+            )
+            connection.execute(
+                "DELETE FROM work_items WHERE epoch_id = ?",
+                (epoch_id,),
+            )
+            connection.execute(
+                "DELETE FROM epochs WHERE epoch_id = ?",
+                (epoch_id,),
+            )
+            connection.commit()
+

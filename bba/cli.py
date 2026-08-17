@@ -175,7 +175,23 @@ def _epoch_create(args: argparse.Namespace) -> int:
     return 0
 
 
+def _epoch_delete(args: argparse.Namespace) -> int:
+    import shutil
+    from bba.state import local_file_lock
+
+    evidence = _evidence(args)
+    state = _state(evidence)
+    with local_file_lock(evidence.root, f"epoch-{args.epoch_id}"):
+        root = evidence.epoch_root(args.epoch_id)
+        if root.exists():
+            shutil.rmtree(root)
+        state.delete_epoch(args.epoch_id)
+    _print_json({"deleted": True, "epoch_id": args.epoch_id})
+    return 0
+
+
 def _catalog(_args: argparse.Namespace) -> int:
+
     from bba.catalog import catalog_summary
 
     _print_json(catalog_summary())
@@ -625,6 +641,14 @@ def _build_epoch_parser(commands: argparse._SubParsersAction) -> None:
     )
     _add_epoch_id(audit)
     audit.set_defaults(handler=_epoch_audit)
+
+    delete = epoch_commands.add_parser(
+        "delete",
+        help="delete an existing or unreadable epoch",
+    )
+    _add_epoch_id(delete)
+    delete.set_defaults(handler=_epoch_delete)
+
 
 
 def build_parser() -> argparse.ArgumentParser:
