@@ -47,33 +47,22 @@ SERVERLESS_COHORT = (
     ),
     _model("anthropic", "claude-sonnet-5", "claude", "claude:claude-sonnet-5"),
     _model("anthropic", "claude-opus-5", "claude", "claude:claude-opus-5"),
-    _model("anthropic", "claude-fable-5", "claude", "claude:claude-fable-5"),
     _model(
         "anthropic",
         "claude-opus-4-8",
         "claude",
         "claude:claude-opus-4-8",
     ),
+
     _model(
         "anthropic",
         "claude-opus-4-7",
         "claude",
         "claude:claude-opus-4-7",
     ),
-    _model(
-        "anthropic",
-        "claude-sonnet-4-6",
-        "claude",
-        "claude:claude-sonnet-4-6",
-    ),
-    _model(
-        "anthropic",
-        "claude-opus-4-6",
-        "claude",
-        "claude:claude-opus-4-6",
-    ),
     _model("xai", "grok-4.3", "grok", "litellm:vertex_ai/xai/grok-4.3"),
 )
+
 
 
 CATALOG_DIGEST = digest_json({

@@ -12,3 +12,5 @@ venv/
 ENV/
 .env
 .bba/
+
+AGENTS.md

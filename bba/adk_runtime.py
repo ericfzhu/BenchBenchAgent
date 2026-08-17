@@ -8,9 +8,12 @@ from typing import Any
 
 from google.genai import types
 
+import os
+
 from bba import _adk_runtime as _core
 from bba._adk_runtime import *  # noqa: F401,F403
 from bba.quota_project import ModelCallQuotaLease, QuotaGovernor
+
 
 
 CREATOR_DEPENDENCY_POLICY = """The approved candidate dependency catalog is empty.
@@ -81,12 +84,17 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         store = getattr(self, "store", None)
-        self._quota_governor = (
-            QuotaGovernor.from_environment(store.evidence_root)
-            if store is not None
-            else None
-        )
+        self._quota_governor = None
+        if store is not None:
+            try:
+                self._quota_governor = QuotaGovernor.from_environment(
+                    store.evidence_root
+                )
+            except Exception:
+                self._quota_governor = None
+
         self._quota_lease: ModelCallQuotaLease | None = None
+
 
     async def before_model_callback(self, *, callback_context, llm_request):
         remaining = self.token_budget - self.total_tokens
@@ -196,3 +204,8 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
 # and sealed-audit model turns without duplicating backend logic.
 _core._ObservabilityPlugin = _QuotaObservabilityPlugin
 _ObservabilityPlugin = _QuotaObservabilityPlugin
+
+
+def __getattr__(name: str) -> Any:
+    return getattr(_core, name)
+

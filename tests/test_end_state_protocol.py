@@ -84,8 +84,10 @@ class TestEndStateProtocol(unittest.TestCase):
     def test_built_in_catalog_matches_the_public_contract(self):
         self.assertEqual(CATALOG_VERSION, "gcp-serverless-2026-08-12")
         self.assertEqual(GCP_LOCATION, "global")
-        self.assertEqual(len(SERVERLESS_COHORT), 12)
+        self.assertEqual(len(SERVERLESS_COHORT), 9)
         self.assertEqual(len({model.family for model in SERVERLESS_COHORT}), 3)
+
+
         self.assertTrue(all("/endpoints/" not in model.model for model in SERVERLESS_COHORT))
 
     def test_manifest_requires_four_models_and_three_families(self):
