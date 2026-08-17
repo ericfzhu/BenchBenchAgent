@@ -101,7 +101,6 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
             callback_context=callback_context,
             llm_request=llm_request,
         )
-        remaining = self.token_budget - self.total_tokens
         if self._quota_governor is not None:
             if self._quota_lease is not None:
                 raise RuntimeError(
@@ -111,7 +110,7 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
                 llm_request
             )
             requested_output = int(
-                llm_request.config.max_output_tokens or remaining
+                llm_request.config.max_output_tokens or self.per_call_max_tokens
             )
             lease = await asyncio.to_thread(
                 self._quota_governor.acquire_model_call,
@@ -122,6 +121,7 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
             llm_request.config.max_output_tokens = lease.output_cap
             self._quota_lease = lease
         return None
+
 
 
     async def after_model_callback(self, *, callback_context, llm_response):

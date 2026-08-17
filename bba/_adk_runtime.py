@@ -145,9 +145,12 @@ class _ObservabilityPlugin(BasePlugin):
         session_id: str,
         invocation_id: str,
         store: Optional[LocalObservabilityStore],
+        max_llm_calls: int = 64,
     ) -> None:
+
         super().__init__(name=f"bba-observability-{uuid4().hex}")
-        self.token_budget = token_budget
+        self.per_call_max_tokens = token_budget
+        self.session_token_budget = max(token_budget, token_budget * max_llm_calls)
         self.behavior_settings = dict(behavior_settings)
         self.epoch_id = epoch_id
         self.role = role
@@ -225,14 +228,14 @@ class _ObservabilityPlugin(BasePlugin):
         return None
 
     async def before_model_callback(self, *, callback_context, llm_request):
-        remaining = self.token_budget - self.total_tokens
-        if remaining <= 0:
-            raise RuntimeError("frozen ADK token budget exhausted")
         if llm_request.config is None:
-            llm_request.config = types.GenerateContentConfig(max_output_tokens=remaining)
+            llm_request.config = types.GenerateContentConfig(max_output_tokens=self.per_call_max_tokens)
         else:
             configured = llm_request.config.max_output_tokens
-            llm_request.config.max_output_tokens = min(configured or remaining, remaining)
+            llm_request.config.max_output_tokens = min(
+                configured or self.per_call_max_tokens,
+                self.per_call_max_tokens,
+            )
 
         # Enable prompt caching across supported providers
         try:
@@ -268,11 +271,15 @@ class _ObservabilityPlugin(BasePlugin):
                 or 0
             )
             self.cached_tokens += int(cached or 0)
-            self.output_tokens += int(getattr(usage, "candidates_token_count", 0) or 0)
-            self.total_tokens += int(getattr(usage, "total_token_count", 0) or 0)
-            if self.total_tokens > self.token_budget:
+            output = int(getattr(usage, "candidates_token_count", 0) or 0)
+            self.output_tokens += output
+            total = int(getattr(usage, "total_token_count", 0) or 0)
+            self.total_tokens += total
+            if output > self.per_call_max_tokens or self.total_tokens > self.session_token_budget:
                 raise RuntimeError("frozen ADK token budget exceeded")
         return None
+
+
 
 
     async def on_model_error_callback(self, *, callback_context, llm_request, error):
@@ -413,7 +420,9 @@ async def _run_agent(
         session_id=session_id,
         invocation_id=invocation_id,
         store=observability_store,
+        max_llm_calls=max_llm_calls,
     )
+
     session_service = InMemorySessionService()
     await session_service.create_session(
         app_name=app_name,
