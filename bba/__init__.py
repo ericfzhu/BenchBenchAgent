@@ -5,10 +5,13 @@ Keeping package initialization lightweight lets local diagnostics such as
 imported.
 """
 
-from __future__ import annotations
-
+import warnings
 from importlib import import_module
 from typing import Any
+
+warnings.filterwarnings("ignore", category=UserWarning, module=r"google\.(adk|genai)")
+warnings.filterwarnings("ignore", message=r".*EXPERIMENTAL.*")
+warnings.filterwarnings("ignore", message=r".*GeminiContextCacheManager.*")
 
 
 _EXPORTS = {

@@ -6,22 +6,31 @@ from dataclasses import dataclass
 from typing import Any
 
 
-SESSION_INPUT_TO_OUTPUT_RATIO = 64
+SESSION_INCREMENTAL_INPUT_RATIO = 8
+SESSION_OUTPUT_RATIO = 4
+MAX_CONTEXT_RATIO = 64
 
 
 @dataclass(frozen=True)
 class AgentSessionBudget:
-    """Per-call and cumulative token limits for one ADK agent invocation."""
+    """Per-call, incremental, and cumulative token limits for one ADK agent invocation."""
 
     max_output_tokens_per_call: int
-    max_session_input_tokens: int
+    max_context_tokens_per_call: int
+    max_session_incremental_input_tokens: int
     max_session_output_tokens: int
     max_llm_calls: int
+
+    @property
+    def max_session_input_tokens(self) -> int:
+        """Compatibility property for max incremental input tokens."""
+        return self.max_session_incremental_input_tokens
 
     def __post_init__(self) -> None:
         if min(
             self.max_output_tokens_per_call,
-            self.max_session_input_tokens,
+            self.max_context_tokens_per_call,
+            self.max_session_incremental_input_tokens,
             self.max_session_output_tokens,
             self.max_llm_calls,
         ) <= 0:
@@ -35,17 +44,19 @@ class AgentSessionBudget:
 def agent_session_budget(resource_budget: Any) -> AgentSessionBudget:
     """Derive the frozen session contract from a manifest resource budget.
 
-    ``max_tokens`` remains the maximum cumulative output for one creator or
-    solver invocation and also caps any individual model turn. Repeated prompt
-    prefixes make cumulative input materially larger in tool-using sessions, so
-    BBA reserves and enforces a sixty-four-times-larger input envelope.
+    ``max_tokens`` defines the per-turn maximum output token count. Incremental
+    input budgeting enforces that net-new content (uncached prompts, files, and tool
+    outputs) stays within a bounded 8x envelope (128k tokens for max_tokens=16k),
+    while permitting single-turn context windows up to 64x (1,024,000 tokens)
+    and session output up to 4x (64,000 tokens).
     """
 
     max_output = int(resource_budget.max_tokens)
     return AgentSessionBudget(
         max_output_tokens_per_call=max_output,
-        max_session_input_tokens=max_output * SESSION_INPUT_TO_OUTPUT_RATIO,
-        max_session_output_tokens=max_output,
+        max_context_tokens_per_call=max_output * MAX_CONTEXT_RATIO,
+        max_session_incremental_input_tokens=max_output * SESSION_INCREMENTAL_INPUT_RATIO,
+        max_session_output_tokens=max_output * SESSION_OUTPUT_RATIO,
         max_llm_calls=int(resource_budget.max_llm_calls),
     )
 

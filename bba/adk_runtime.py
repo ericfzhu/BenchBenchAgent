@@ -92,7 +92,7 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
             max_llm_calls,
         )
         self.session_token_budget = (
-            self._session_budget.max_session_input_tokens
+            self._session_budget.max_session_incremental_input_tokens
             + self._session_budget.max_session_output_tokens
         )
         store = getattr(self, "store", None)
@@ -111,14 +111,19 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
         )
         self._quota_lease: ModelCallQuotaLease | None = None
 
+    @property
+    def incremental_input_tokens(self) -> int:
+        return max(0, self.prompt_tokens - self.cached_tokens)
+
     async def before_model_callback(self, *, callback_context, llm_request):
-        remaining_input = (
-            self._session_budget.max_session_input_tokens - self.prompt_tokens
+        remaining_incremental_input = (
+            self._session_budget.max_session_incremental_input_tokens
+            - self.incremental_input_tokens
         )
         remaining_output = (
             self._session_budget.max_session_output_tokens - self.output_tokens
         )
-        if remaining_input <= 0 or remaining_output <= 0:
+        if remaining_incremental_input <= 0 or remaining_output <= 0:
             raise RuntimeError("frozen ADK session token budget exhausted")
 
         if llm_request.config is None:
@@ -154,9 +159,9 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
             estimated_input = self._quota_governor.estimate_input_tokens(
                 llm_request
             )
-            if estimated_input > remaining_input:
+            if estimated_input > self._session_budget.max_context_tokens_per_call:
                 raise RuntimeError(
-                    "the next model call would exceed the frozen session input budget"
+                    "the next model call would exceed the model context limit"
                 )
             lease = await asyncio.to_thread(
                 self._quota_governor.acquire_model_call,
@@ -194,8 +199,8 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
                 llm_response=llm_response,
             )
             if (
-                self.prompt_tokens
-                > self._session_budget.max_session_input_tokens
+                self.incremental_input_tokens
+                > self._session_budget.max_session_incremental_input_tokens
                 or self.output_tokens
                 > self._session_budget.max_session_output_tokens
             ):

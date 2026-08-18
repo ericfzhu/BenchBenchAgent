@@ -36,13 +36,14 @@ class TestSessionBudget(unittest.TestCase):
             "litellm:vertex_ai/xai/grok-4.3",
         )
 
-    def test_default_contract_is_1024k_input_and_16k_output(self):
+    def test_default_contract_is_128k_incremental_input_and_64k_output(self):
         value = agent_session_budget(
             SimpleNamespace(max_tokens=16_000, max_llm_calls=64)
         )
         self.assertEqual(value.max_output_tokens_per_call, 16_000)
-        self.assertEqual(value.max_session_input_tokens, 1_024_000)
-        self.assertEqual(value.max_session_output_tokens, 16_000)
+        self.assertEqual(value.max_context_tokens_per_call, 1_024_000)
+        self.assertEqual(value.max_session_incremental_input_tokens, 128_000)
+        self.assertEqual(value.max_session_output_tokens, 64_000)
         self.assertEqual(value.max_llm_calls, 64)
 
     def test_controller_reservation_matches_runtime_session_contract(self):
@@ -64,10 +65,10 @@ class TestSessionBudget(unittest.TestCase):
             limits,
         )
         args, attribution, cost = state.reservations[0]
-        self.assertEqual(args[2:5], (64, 1_024_000, 16_000))
+        self.assertEqual(args[2:5], (64, 128_000, 64_000))
         self.assertEqual(attribution.model, "grok-4.3")
         self.assertFalse(attribution.cost_exempt)
-        self.assertAlmostEqual(cost, 2.64, places=6)
+        self.assertAlmostEqual(cost, 0.64, places=6)
 
         proxy.reconcile_inference(
             "epoch",
@@ -178,37 +179,37 @@ class TestSessionBudget(unittest.TestCase):
             store=None,
             max_llm_calls=64,
         )
-        first_request = SimpleNamespace(config=None)
-        asyncio.run(
-            plugin.before_model_callback(
-                callback_context=None,
-                llm_request=first_request,
+        for _ in range(4):
+            request = SimpleNamespace(config=None)
+            asyncio.run(
+                plugin.before_model_callback(
+                    callback_context=None,
+                    llm_request=request,
+                )
             )
-        )
-        self.assertEqual(first_request.config.max_output_tokens, 10)
-        first_response = SimpleNamespace(
-            model_version=None,
-            usage_metadata=SimpleNamespace(
-                prompt_token_count=40,
-                candidates_token_count=6,
-                total_token_count=46,
-            ),
-        )
-        asyncio.run(
-            plugin.after_model_callback(
-                callback_context=None,
-                llm_response=first_response,
+            response = SimpleNamespace(
+                model_version=None,
+                usage_metadata=SimpleNamespace(
+                    prompt_token_count=10,
+                    candidates_token_count=9,
+                    total_token_count=19,
+                ),
             )
-        )
+            asyncio.run(
+                plugin.after_model_callback(
+                    callback_context=None,
+                    llm_response=response,
+                )
+            )
 
-        second_request = SimpleNamespace(config=None)
+        fifth_request = SimpleNamespace(config=None)
         asyncio.run(
             plugin.before_model_callback(
                 callback_context=None,
-                llm_request=second_request,
+                llm_request=fifth_request,
             )
         )
-        self.assertEqual(second_request.config.max_output_tokens, 4)
+        self.assertEqual(fifth_request.config.max_output_tokens, 4)
 
     def test_plugin_enforces_cumulative_input_independently(self):
         identity = ModelIdentity(
@@ -238,9 +239,9 @@ class TestSessionBudget(unittest.TestCase):
         response = SimpleNamespace(
             model_version=None,
             usage_metadata=SimpleNamespace(
-                prompt_token_count=641,
+                prompt_token_count=81,
                 candidates_token_count=1,
-                total_token_count=642,
+                total_token_count=82,
             ),
         )
         with self.assertRaisesRegex(RuntimeError, "session token budget"):

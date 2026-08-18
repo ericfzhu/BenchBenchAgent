@@ -6,8 +6,13 @@ import argparse
 import json
 import os
 import sys
+import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Sequence
+
+warnings.filterwarnings("ignore", category=UserWarning, module=r"google\.(adk|genai)")
+warnings.filterwarnings("ignore", message=r".*EXPERIMENTAL.*")
+warnings.filterwarnings("ignore", message=r".*GeminiContextCacheManager.*")
 
 from bba.protocol import (
     PromotionDecision,

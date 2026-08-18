@@ -834,6 +834,10 @@ class TournamentController:
             )
         cell_id = self._cell_record_id(snapshot, solver, repetition)
         attempts = list(self.attempts.get(cell_id, ()))
+        print(
+            f"[*] Solving benchmark {snapshot.snapshot_id} with {solver.artifact_id} (rep {repetition + 1}/{self.manifest.thresholds.solver_repetitions})...",
+            flush=True,
+        )
         while True:
             if attempts and attempts[-1].state == CellState.SUCCESS:
                 break
@@ -851,6 +855,10 @@ class TournamentController:
         if not attempts:
             raise RuntimeError(f"solver cell has no immutable attempt: {cell_id}")
         cell = self._select_solver_cell(snapshot, solver, repetition, attempts)
+        print(
+            f"[+] Solver {solver.artifact_id} on {snapshot.snapshot_id} (rep {repetition + 1}): {cell.state.value} (score: {cell.score})",
+            flush=True,
+        )
         cell_path = self.evidence.publish_record_idempotent(
             self.manifest.epoch_id, "solver-cells", cell_id, cell
         )
@@ -972,11 +980,19 @@ class TournamentController:
             for snapshot in self.snapshots
         }
         for round_index in range(self.manifest.thresholds.rounds):
+            print(
+                f"\n=== Round {round_index + 1}/{self.manifest.thresholds.rounds}: Benchmark Creation & Evaluation ===",
+                flush=True,
+            )
             for creator in self.manifest.cohort:
                 parent = snapshot_by_key.get((creator.artifact_id, round_index - 1))
                 feedback = self._feedback(parent) if parent is not None else {}
                 snapshot = snapshot_by_key.get((creator.artifact_id, round_index))
                 if snapshot is not None:
+                    print(
+                        f"[*] Creator {creator.artifact_id}: snapshot {snapshot.snapshot_id} already exists",
+                        flush=True,
+                    )
                     continue
                 work_id = self._creator_work_id(creator, round_index)
                 payload = self._creator_payload(creator, round_index, parent)
@@ -999,6 +1015,10 @@ class TournamentController:
                         "input_tokens": self.manifest.budget.max_epoch_input_tokens,
                         "output_tokens": self.manifest.budget.max_epoch_output_tokens,
                     },
+                )
+                print(
+                    f"[*] Invoking creator agent {creator.artifact_id}...",
+                    flush=True,
                 )
                 with tempfile.TemporaryDirectory(prefix="bba-creator-output-") as temporary:
                     output = Path(temporary) / "design"
@@ -1072,6 +1092,10 @@ class TournamentController:
                 self.snapshots.append(snapshot)
                 self.snapshots = self._ordered_snapshots(self.snapshots)
                 snapshot_by_key[(creator.artifact_id, round_index)] = snapshot
+                print(
+                    f"[+] Successfully froze candidate snapshot {snapshot.snapshot_id} for {creator.artifact_id}",
+                    flush=True,
+                )
 
             seed = self._freeze_round_seed(round_index)
             round_snapshots = [
@@ -1093,6 +1117,10 @@ class TournamentController:
                             "validation work is complete but evidence is missing: "
                             + validation_work_id
                         )
+                    print(
+                        f"[*] Validating benchmark snapshot {snapshot.snapshot_id} in sandbox...",
+                        flush=True,
+                    )
                     try:
                         with tempfile.TemporaryDirectory(
                             prefix="bba-instance-materialize-"
@@ -1128,6 +1156,11 @@ class TournamentController:
                             self.manifest.epoch_id, validation_work_id, str(exc)
                         )
                         raise
+                    validation_status = "PASSED" if validation.passed else "FAILED"
+                    print(
+                        f"[{'+' if validation.passed else '-'}] Snapshot {snapshot.snapshot_id} validation: {validation_status}",
+                        flush=True,
+                    )
                     validation_path = self.evidence.publish_record_idempotent(
                         self.manifest.epoch_id,
                         "validations",
