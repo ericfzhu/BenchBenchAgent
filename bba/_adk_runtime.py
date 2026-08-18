@@ -1029,6 +1029,7 @@ class AdkSolverBackend(_TraceBackend):
                 trace_callback=self._save_trace,
                 epoch_id=manifest.epoch_id,
                 observability_store=self._observability_store,
+                is_finished=lambda: submitted_debrief is not None and set(submitted) == expected_set,
             ))
         except asyncio.TimeoutError as exc:
             raise SolverTimedOut(
@@ -1037,6 +1038,12 @@ class AdkSolverBackend(_TraceBackend):
         except ValueError as exc:
             raise PredictionParseFailure(f"ADK solver submission is invalid: {exc}") from exc
         except Exception as exc:
+            if "scripted ADK model exhausted" in str(exc) and (
+                set(submitted) != expected_set or submitted_debrief is None
+            ):
+                raise PredictionParseFailure(
+                    "solver ended without submitting complete predictions and debrief"
+                ) from exc
             raise ProviderFailure(f"ADK solver invocation failed: {exc}") from exc
         self._verify_usage_metadata()
         if set(submitted) != expected_set:

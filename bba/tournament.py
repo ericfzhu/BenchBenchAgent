@@ -95,6 +95,22 @@ class _SessionBudgetState:
         """Reconcile using the same exact route that priced the reservation."""
 
         selected_model = self._model_for_reservation(reservation_id)
+        if hasattr(self._state, "_connect") and hasattr(self._state, "_reservation_storage_id"):
+            with self._state._connect() as connection:
+                storage_id = self._state._reservation_storage_id(
+                    connection, epoch_id, reservation_id, legacy_fallback=True
+                )
+                row = connection.execute(
+                    "SELECT reserved_input_tokens, reserved_output_tokens "
+                    "FROM inference_reservations WHERE epoch_id = ? AND reservation_id = ?",
+                    (epoch_id, storage_id),
+                ).fetchone()
+                if row is not None:
+                    if row["reserved_input_tokens"] is not None:
+                        input_tokens = min(input_tokens, int(row["reserved_input_tokens"]))
+                    if row["reserved_output_tokens"] is not None:
+                        output_tokens = min(output_tokens, int(row["reserved_output_tokens"]))
+
         with model_cost_context(
             selected_model,
             cost_exempt=self._cost_exempt,
