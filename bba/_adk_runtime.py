@@ -404,8 +404,9 @@ async def _run_agent(
     token_budget: int,
     session_token: str,
     trace_callback: Callable[[AdkInvocationTrace], None],
-    epoch_id: str,
-    observability_store: Optional[LocalObservabilityStore],
+    epoch_id: str = "adk-ephemeral",
+    observability_store: Optional[LocalObservabilityStore] = None,
+    is_finished: Optional[Callable[[], bool]] = None,
 ) -> None:
     app_name = f"bba_{role}"
     session_id = f"{role}-{session_token}"
@@ -438,23 +439,39 @@ async def _run_agent(
     error = None
 
     async def consume_events() -> None:
-        new_message = types.Content(role="user", parts=[types.Part(text=message)])
-        async for _event in runner.run_async(
-            user_id=user_id,
-            session_id=session_id,
-            invocation_id=invocation_id,
-            new_message=new_message,
-            run_config=RunConfig(
-                max_llm_calls=max_llm_calls,
-                custom_metadata={
-                    "bba.epoch_id": epoch_id,
-                    "bba.role": role,
-                    "bba.identity": identity.artifact_id,
-                },
-                telemetry=_private_telemetry_config(),
-            ),
-        ):
-            pass
+        current_message = types.Content(role="user", parts=[types.Part(text=message)])
+        turn = 0
+        while plugin.model_calls < max_llm_calls:
+            turn += 1
+            inv_id = f"{invocation_id}-{turn}" if turn > 1 else invocation_id
+            async for _event in runner.run_async(
+                user_id=user_id,
+                session_id=session_id,
+                invocation_id=inv_id,
+                new_message=current_message,
+                run_config=RunConfig(
+                    max_llm_calls=max_llm_calls - plugin.model_calls,
+                    custom_metadata={
+                        "bba.epoch_id": epoch_id,
+                        "bba.role": role,
+                        "bba.identity": identity.artifact_id,
+                    },
+                    telemetry=_private_telemetry_config(),
+                ),
+            ):
+                pass
+            if is_finished is None or is_finished():
+                break
+            if role == "creator":
+                continuation = (
+                    "Continue creating the benchmark design using candidate file tools. "
+                    "Write all required files and call finish_candidate when done."
+                )
+            else:
+                continuation = (
+                    "Please submit predictions using submit_predictions, followed by submit_debrief."
+                )
+            current_message = types.Content(role="user", parts=[types.Part(text=continuation)])
 
     caught: Optional[BaseException] = None
     try:
@@ -752,6 +769,7 @@ class AdkCreatorBackend(_TraceBackend):
                 trace_callback=self._save_trace,
                 epoch_id=manifest.epoch_id,
                 observability_store=self._observability_store,
+                is_finished=lambda: finished,
             ))
         except asyncio.TimeoutError as exc:
             raise ProviderFailure(str(exc) or "creator invocation timed out") from exc
