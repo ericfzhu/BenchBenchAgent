@@ -602,16 +602,19 @@ class AdkCreatorBackend(_TraceBackend):
             return {"files": sorted(files, key=lambda row: row["path"])}
 
         def read_candidate_file(
-            path: str, offset: Union[int, float, str] = 0, limit: Union[int, float, str] = 65536
+            path: str, offset: int = 0, limit: int = 65536
         ) -> Dict[str, Any]:
-            """Read a UTF-8 candidate file chunk.
+            """Read a range of bytes from one candidate file.
 
             Args:
                 path: POSIX path relative to the candidate workspace.
                 offset: Byte offset at which reading starts.
                 limit: Maximum number of bytes to return.
             """
-            target = _safe_relative_path(output_dir, path)
+            try:
+                target = _safe_relative_path(output_dir, path)
+            except Exception as exc:
+                return {"error": f"invalid path: {exc}"}
             try:
                 offset_val = int(float(str(offset).strip()))
             except (ValueError, TypeError):
@@ -623,7 +626,7 @@ class AdkCreatorBackend(_TraceBackend):
             offset_val = max(0, offset_val)
             limit_val = max(1, min(262144, limit_val))
             if not target.is_file():
-                raise ValueError("invalid candidate read request")
+                return {"error": f"file not found: {path}"}
             data = target.read_bytes()[offset_val:offset_val + limit_val]
             total_bytes = target.stat().st_size
             return {
@@ -644,16 +647,19 @@ class AdkCreatorBackend(_TraceBackend):
             nonlocal finished
             data = content.encode("utf-8")
             if len(data) > self.max_bytes:
-                raise ValueError("single file exceeds the candidate byte limit")
-            with lock:
+                return {"error": f"single file exceeds byte limit ({len(data)} > {self.max_bytes})"}
+            try:
                 target = _safe_relative_path(output_dir, path)
+            except Exception as exc:
+                return {"error": f"invalid path: {exc}"}
+            with lock:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 old_size = target.stat().st_size if target.is_file() else 0
                 files = [entry for entry in _tree_entries(output_dir) if entry.is_file()]
                 total = sum(entry.stat().st_size for entry in files) - old_size + len(data)
                 prospective_count = len(files) + (0 if target.is_file() else 1)
                 if prospective_count > self.max_files or total > self.max_bytes:
-                    raise ValueError("candidate workspace limit exceeded")
+                    return {"error": f"candidate workspace limit exceeded ({prospective_count} files, {total} bytes)"}
                 temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
                 temporary.write_bytes(data)
                 temporary.replace(target)
@@ -671,10 +677,13 @@ class AdkCreatorBackend(_TraceBackend):
                 path: POSIX path relative to the candidate workspace.
             """
             nonlocal finished
-            with lock:
+            try:
                 target = _safe_relative_path(output_dir, path)
+            except Exception as exc:
+                return {"error": f"invalid path: {exc}"}
+            with lock:
                 if not target.is_file():
-                    raise ValueError("only regular candidate files may be deleted")
+                    return {"error": f"file not found or is not a regular file: {path}"}
                 target.unlink()
                 finished = False
             return {"path": path, "deleted": True}
@@ -688,9 +697,17 @@ class AdkCreatorBackend(_TraceBackend):
                 script: Python file relative to the candidate workspace.
                 args: Command-line arguments passed to the script.
             """
-            target = _safe_relative_path(output_dir, script)
+            try:
+                target = _safe_relative_path(output_dir, script)
+            except Exception as exc:
+                return {"returncode": 1, "timed_out": False, "stdout": "", "stderr": f"Invalid path: {exc}"}
             if not target.is_file() or target.suffix != ".py":
-                raise ValueError("script must name a candidate Python file")
+                return {
+                    "returncode": 1,
+                    "timed_out": False,
+                    "stdout": "",
+                    "stderr": f"Error: script '{script}' not found or is not a Python (.py) file in candidate workspace",
+                }
             if args is None:
                 arg_list: list[str] = []
             elif isinstance(args, str):
@@ -835,7 +852,10 @@ class AdkSolverBackend(_TraceBackend):
                 offset: Byte offset at which reading starts.
                 limit: Maximum number of bytes to return.
             """
-            target = _safe_relative_path(root, path)
+            try:
+                target = _safe_relative_path(root, path)
+            except Exception as exc:
+                return {"error": f"invalid path: {exc}"}
             try:
                 offset_val = int(float(str(offset).strip()))
             except (ValueError, TypeError):
@@ -847,7 +867,7 @@ class AdkSolverBackend(_TraceBackend):
             offset_val = max(0, offset_val)
             limit_val = max(1, min(262144, limit_val))
             if not target.is_file():
-                raise ValueError("invalid solver bundle read request")
+                return {"error": f"file not found in bundle: {path}"}
             raw = target.read_bytes()[offset_val:offset_val + limit_val]
             total_bytes = target.stat().st_size
             metadata = {
