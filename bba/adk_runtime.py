@@ -110,10 +110,11 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
             else None
         )
         self._quota_lease: ModelCallQuotaLease | None = None
+        self.peak_context_tokens = 0
 
     @property
     def incremental_input_tokens(self) -> int:
-        return max(0, self.prompt_tokens - self.cached_tokens)
+        return self.peak_context_tokens
 
     async def before_model_callback(self, *, callback_context, llm_request):
         remaining_incremental_input = (
@@ -193,6 +194,8 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
             if usage is not None
             else 0
         )
+        if input_tokens > self.peak_context_tokens:
+            self.peak_context_tokens = input_tokens
         try:
             result = await super().after_model_callback(
                 callback_context=callback_context,
