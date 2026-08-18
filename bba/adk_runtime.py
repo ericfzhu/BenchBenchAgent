@@ -198,6 +198,8 @@ class _QuotaObservabilityPlugin(_core._ObservabilityPlugin):
                 callback_context=callback_context,
                 llm_response=llm_response,
             )
+            if output_tokens > self._session_budget.max_output_tokens_per_call:
+                raise RuntimeError("frozen ADK per-call output limit exceeded")
             if (
                 self.incremental_input_tokens
                 > self._session_budget.max_session_incremental_input_tokens
