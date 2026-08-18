@@ -275,7 +275,11 @@ class _ObservabilityPlugin(BasePlugin):
             self.output_tokens += output
             total = int(getattr(usage, "total_token_count", 0) or 0)
             self.total_tokens += total
-            if output > self.per_call_max_tokens or self.total_tokens > self.session_token_budget:
+            incremental_input = max(0, self.prompt_tokens - self.cached_tokens)
+            if (
+                output > self.per_call_max_tokens
+                or (incremental_input + self.output_tokens) > self.session_token_budget
+            ):
                 raise RuntimeError("frozen ADK token budget exceeded")
         return None
 
