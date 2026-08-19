@@ -41,6 +41,12 @@ _EXPORTS = {
         "bba.adk_runtime",
         "build_adk_solver_backends",
     ),
+    "CREATOR_INSTRUCTION": ("bba.prompts", "CREATOR_INSTRUCTION"),
+    "SOLVER_INSTRUCTION": ("bba.prompts", "SOLVER_INSTRUCTION"),
+    "CREATOR_INITIAL_INSTRUCTION": ("bba.prompts", "CREATOR_INITIAL_INSTRUCTION"),
+    "SOLVER_INITIAL_INSTRUCTION": ("bba.prompts", "SOLVER_INITIAL_INSTRUCTION"),
+    "CREATOR_CONTINUATION_PROMPT": ("bba.prompts", "CREATOR_CONTINUATION_PROMPT"),
+    "SOLVER_CONTINUATION_PROMPT": ("bba.prompts", "SOLVER_CONTINUATION_PROMPT"),
 }
 
 __all__ = list(_EXPORTS)

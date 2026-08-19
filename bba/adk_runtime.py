@@ -15,14 +15,13 @@ from bba.quota_project import ModelCallQuotaLease, QuotaGovernor
 from bba.session_budget import agent_session_budget_from_values
 
 
+from bba.prompts import CREATOR_DEPENDENCY_POLICY
+
+
 _GOVERNED_MODEL_ROUTES = frozenset(
     (identity.publisher, identity.model) for identity in SERVERLESS_COHORT
 )
 
-CREATOR_DEPENDENCY_POLICY = """The approved candidate dependency catalog is empty.
-Use only the Python standard library. requirements.lock must be empty or contain
-comments only. Do not import, vendor, or require any third-party Python package.
-The controller will reject a candidate that declares an unavailable dependency."""
 CREATOR_INSTRUCTION = (
     _core.CREATOR_INSTRUCTION.rstrip()
     + "\n\n"

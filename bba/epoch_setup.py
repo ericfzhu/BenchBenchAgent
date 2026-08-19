@@ -7,9 +7,9 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from bba.adk_runtime import CREATOR_INSTRUCTION, SOLVER_INSTRUCTION
 from bba.catalog import CATALOG_DIGEST, CATALOG_VERSION, GCP_LOCATION, SERVERLESS_COHORT
 from bba.evaluator_identity import build_evaluator_identity
+from bba.prompts import CREATOR_INSTRUCTION, SOLVER_INSTRUCTION
 from bba.protocol import ExperimentManifest, SandboxCapabilities, digest_json, to_primitive
 from bba.runtime import expected_sandbox_backend
 
