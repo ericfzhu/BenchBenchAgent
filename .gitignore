@@ -4,13 +4,23 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
-dist/
-build/
+/dist/
+/build/
 *.egg-info/
 .venv/
 venv/
 ENV/
 .env
 .bba/
+node_modules/
+frontend/node_modules/
+frontend/.yarnrc
+frontend/.npmrc
+.npmrc
+frontend/dist/
+bba/data/dist/
+yarn-error.log
+.claude/
+.agents/
 
 AGENTS.md

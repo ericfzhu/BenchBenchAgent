@@ -74,7 +74,7 @@ def _sandbox_status(_args: argparse.Namespace) -> int:
 def _web_console(args: argparse.Namespace) -> int:
     from bba.web import run_console
 
-    run_console(Path(args.evidence_root), args.port)
+    run_console(Path(args.evidence_root), args.port, reload=getattr(args, "reload", False))
     return 0
 
 
@@ -660,18 +660,24 @@ def build_parser() -> argparse.ArgumentParser:
     )
     catalog.set_defaults(handler=_catalog)
 
-    web = commands.add_parser(
-        "web",
-        help="run the localhost operator console",
-    )
-    _add_evidence_root(web)
-    web.add_argument(
-        "--port",
-        type=int,
-        default=8765,
-        help="local TCP port (default: 8765)",
-    )
-    web.set_defaults(handler=_web_console)
+    for name in ("web", "operator"):
+        sub = commands.add_parser(
+            name,
+            help="run the localhost operator console and spatial command deck",
+        )
+        _add_evidence_root(sub)
+        sub.add_argument(
+            "--port",
+            type=int,
+            default=8765,
+            help="local TCP port (default: 8765)",
+        )
+        sub.add_argument(
+            "--reload",
+            action="store_true",
+            help="enable auto-reload on source code changes",
+        )
+        sub.set_defaults(handler=_web_console)
 
     evidence = commands.add_parser(
         "evidence",
@@ -697,7 +703,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if args.command in {"epoch", "web"}:
+        if args.command in {"epoch", "web", "operator"}:
             from bba.tracing import configure_tracing
 
             configure_tracing()

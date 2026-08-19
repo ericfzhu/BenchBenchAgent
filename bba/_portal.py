@@ -1,16 +1,12 @@
-"""Compatibility facade for the local development portal implementation."""
+"""Entrypoint facade for the web console implementation."""
 
-from bba.portal_app import *  # noqa: F401,F403
-from bba.portal_app import (
-    CSS,
-    _chip,
-    _csrf,
-    _drop_get_route,
-    _e,
-    _epoch_link,
-    _layout,
-    _phase_percent,
-    _tone,
-    _u,
+from __future__ import annotations
+
+from bba._web import (
+    app,
     create_app,
+    get_app,
+    run_console,
 )
+
+__all__ = ["app", "create_app", "get_app", "run_console"]

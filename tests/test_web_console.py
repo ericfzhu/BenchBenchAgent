@@ -1,4 +1,4 @@
-"""Local development portal tests."""
+"""Local development portal and spatial command deck tests."""
 
 from __future__ import annotations
 
@@ -20,10 +20,25 @@ from bba.web import create_app, run_console
 class FakeEvidence:
     root = Path("/tmp/bba-console-test")
 
+    def epoch_root(self, epoch_id: str) -> Path:
+        return self.root / "epochs" / epoch_id
+
 
 class FakeJobs:
     def __init__(self):
-        self.items = {}
+        self.items = {
+            "job-1": {
+                "job_id": "job-1",
+                "label": "Preflight",
+                "status": "succeeded",
+                "epoch_id": "epoch-one",
+                "created_at": "2026-08-12T01:00:00+00:00",
+                "started_at": "2026-08-12T01:00:01+00:00",
+                "finished_at": "2026-08-12T01:00:05+00:00",
+                "output": "All checks passed.",
+                "error": None,
+            }
+        }
 
     def recent(self, limit=10):
         return list(self.items.values())[:limit]
@@ -75,13 +90,21 @@ class FakeConsole:
         }]
 
     def create_epoch(self, epoch_id):
-        raise AssertionError("not used")
+        return SimpleNamespace(job_id=f"job-create-{epoch_id}", label=f"Create epoch {epoch_id}", status="queued")
 
     def run_epoch_action(self, epoch_id, action):
-        raise AssertionError("missing confirmation should stop this call")
+        if action not in self.EPOCH_ACTIONS and action not in {"run", "close"}:
+            raise ValueError("unknown action")
+        return SimpleNamespace(job_id=f"job-{action}", label=self.EPOCH_ACTIONS.get(action, action), status="queued")
 
     def run_diagnostic(self, action):
-        return SimpleNamespace(job_id="diagnostic-one")
+        return SimpleNamespace(job_id="diagnostic-one", label="Run diagnostic", status="queued")
+
+    def record_certificate(self, epoch_id, snapshot_id, *args, **kwargs):
+        return SimpleNamespace(job_id="job-cert-1", label="Record Certificate", status="queued")
+
+    def record_review(self, epoch_id, snapshot_id, *args, **kwargs):
+        return SimpleNamespace(job_id="job-review-1", label="Record Review", status="queued")
 
     def epoch(self, epoch_id):
         return {
@@ -101,7 +124,6 @@ class FakeConsole:
                 "estimated_cost_usd": 12.5,
                 "max_estimated_cost_usd": 500.0,
             },
-
             "workflow": [
                 {"key": "setup", "label": "Setup", "complete": True, "current": False},
                 {"key": "preflight", "label": "Paid preflight", "complete": True, "current": False},
@@ -243,64 +265,179 @@ class TestWebConsole(unittest.TestCase):
         self.app = create_app(FakeConsole())
         self.client = TestClient(self.app)
 
-    def test_workspace_epoch_candidate_and_rankings_render(self):
-        dashboard = self.client.get("/")
-        self.assertEqual(dashboard.status_code, 200)
-        self.assertIn("Build, test, and run epochs", dashboard.text)
-        self.assertIn("Diagnostics", dashboard.text)
-        self.assertIn("Generated-code sandbox", dashboard.text)
-        self.assertIn("epoch-one", dashboard.text)
-        self.assertEqual(dashboard.headers["x-frame-options"], "DENY")
+    def test_spatial_command_deck_and_spa_routes(self):
+        # 1. Spatial command deck at root /
+        deck = self.client.get("/")
+        self.assertEqual(deck.status_code, 200)
+        self.assertIn("Command Deck", deck.text)
+        self.assertIn('id="root"', deck.text)
+        self.assertEqual(deck.headers["x-frame-options"], "DENY")
         self.assertIn(
             "frame-ancestors 'none'",
-            dashboard.headers["content-security-policy"],
+            deck.headers["content-security-policy"],
+        )
+        self.assertIn(
+            "connect-src 'self'",
+            deck.headers["content-security-policy"],
         )
 
-        epoch = self.client.get("/epochs/epoch-one")
-        self.assertEqual(epoch.status_code, 200)
-        self.assertIn("Workflow", epoch.text)
-        self.assertIn("Human review", epoch.text)
-        self.assertIn("Conservative cost", epoch.text)
-        self.assertIn("Candidate benchmarks", epoch.text)
-        self.assertIn("Run or resume public epoch", epoch.text)
+        # Check static dist bundle
+        bundle = self.client.get("/static/dist/app.bundle.js")
+        self.assertEqual(bundle.status_code, 200)
 
-        candidate = self.client.get(
-            "/epochs/epoch-one/candidates/candidate-one"
+        # 2. SPA routes serve the HTML shell
+        epochs = self.client.get("/epochs")
+        self.assertEqual(epochs.status_code, 200)
+        self.assertIn('id="root"', epochs.text)
+
+        epoch_page = self.client.get("/epochs/epoch-one")
+        self.assertEqual(epoch_page.status_code, 200)
+        self.assertIn('id="root"', epoch_page.text)
+
+        jobs_page = self.client.get("/jobs")
+        self.assertEqual(jobs_page.status_code, 200)
+        self.assertIn('id="root"', jobs_page.text)
+
+    def test_reactive_json_api_endpoints(self):
+        # 1. System state API
+        sys_res = self.client.get("/api/system/state")
+        self.assertEqual(sys_res.status_code, 200)
+        sys_data = sys_res.json()
+        self.assertIn("system", sys_data)
+        self.assertTrue(sys_data["system"]["ready"])
+        self.assertEqual(sys_data["csrf_token"], self.app.state.csrf_token)
+        self.assertIn("graph", sys_data)
+
+        # 2. Epoch state API
+        ep_res = self.client.get("/api/epoch/epoch-one/state")
+        self.assertEqual(ep_res.status_code, 200)
+        ep_data = ep_res.json()
+        self.assertEqual(ep_data["epoch_id"], "epoch-one")
+        self.assertEqual(ep_data["phase"], "awaiting_review")
+        self.assertIn("graph", ep_data)
+        self.assertIn("candidates", ep_data)
+        self.assertIn("results", ep_data)
+        self.assertIn("observability", ep_data)
+
+        # 3. Candidate details API
+        cand_res = self.client.get("/api/epoch/epoch-one/candidates/candidate-one")
+        self.assertEqual(cand_res.status_code, 200)
+        cand_data = cand_res.json()
+        self.assertIn("candidate", cand_data)
+        self.assertEqual(cand_data["candidate"]["snapshot_id"], "candidate-one")
+
+        # 4. Jobs list and job details API
+        jobs_res = self.client.get("/api/jobs")
+        self.assertEqual(jobs_res.status_code, 200)
+        jobs_data = jobs_res.json()
+        self.assertIn("jobs", jobs_data)
+        self.assertEqual(len(jobs_data["jobs"]), 1)
+
+        job_detail = self.client.get("/api/jobs/job-1")
+        self.assertEqual(job_detail.status_code, 200)
+        self.assertEqual(job_detail.json()["job_id"], "job-1")
+
+        bad_job = self.client.get("/api/jobs/nonexistent-job")
+        self.assertEqual(bad_job.status_code, 404)
+
+        # 5. JSON Action execution API with CSRF
+        action_res = self.client.post(
+            "/api/epoch/epoch-one/action",
+            json={
+                "action": "preflight",
+                "csrf_token": self.app.state.csrf_token,
+                "confirmed": "yes",
+            },
         )
-        self.assertEqual(candidate.status_code, 200)
-        self.assertIn("Record solvability evidence", candidate.text)
-        self.assertIn("Record a signed candidate decision", candidate.text)
-        self.assertIn("item-5", candidate.text)
+        self.assertEqual(action_res.status_code, 200)
+        action_data = action_res.json()
+        self.assertEqual(action_data["job_id"], "job-preflight")
 
-        rankings = self.client.get("/epochs/epoch-one/results")
-        self.assertEqual(rankings.status_code, 200)
-        self.assertIn("Final creator ranking", rankings.text)
-        self.assertIn("Solver ranking", rankings.text)
-        self.assertIn("Spearman agreement", rankings.text)
-        self.assertIn("Creator-by-solver matrix", rankings.text)
-
-        activity = self.client.get("/epochs/epoch-one/observability")
-        self.assertEqual(activity.status_code, 200)
-        self.assertIn("Google ADK observability", activity.text)
-        self.assertIn("Recent ADK invocations", activity.text)
-        self.assertIn("Local OTLP export is on", activity.text)
-
-    def test_diagnostic_route_uses_the_serialized_job_queue(self):
-        response = self.client.post(
-            "/diagnostics/tests",
-            data={"csrf_token": self.app.state.csrf_token},
-            follow_redirects=False,
+        # 6. Action parameter route
+        action_param_res = self.client.post(
+            "/api/epoch/epoch-one/action/preflight",
+            json={
+                "csrf_token": self.app.state.csrf_token,
+                "confirmed": "yes",
+            },
         )
-        self.assertEqual(response.status_code, 303)
-        self.assertEqual(response.headers["location"], "/jobs/diagnostic-one")
+        self.assertEqual(action_param_res.status_code, 200)
+
+        # 7. Certificate recording API
+        cert_res = self.client.post(
+            "/api/epoch/epoch-one/candidates/candidate-one/certificate",
+            json={
+                "csrf_token": self.app.state.csrf_token,
+                "confirmed": "yes",
+                "certificate_type": "independent_reference",
+                "issuer_id": "issuer-1",
+                "independence_basis": "independent team",
+                "verification_method": "re-execution",
+                "scope": "all",
+                "evidence_lines": "test=test.txt",
+            },
+        )
+        self.assertEqual(cert_res.status_code, 200)
+        self.assertEqual(cert_res.json()["status"], "ok")
+
+        # 8. Review recording API
+        review_res = self.client.post(
+            "/api/epoch/epoch-one/candidates/candidate-one/review",
+            json={
+                "csrf_token": self.app.state.csrf_token,
+                "confirmed": "yes",
+                "reviewer_id": "reviewer-1",
+                "certificate_digest": "cert-1",
+                "decision": "promote_v1_canonical",
+                "findings": {"named_capability_valid": True},
+                "limitations": "none",
+                "key_id": "key-1",
+                "signing_key_path": "/tmp/key",
+                "public_key_path": "/tmp/pub",
+            },
+        )
+        self.assertEqual(review_res.status_code, 200)
+        self.assertEqual(review_res.json()["status"], "ok")
+
+        # 9. Diagnostics API
+        diag_res = self.client.post(
+            "/api/diagnostics/tests",
+            json={
+                "csrf_token": self.app.state.csrf_token,
+            },
+        )
+        self.assertEqual(diag_res.status_code, 200)
+        self.assertEqual(diag_res.json()["job_id"], "diagnostic-one")
+
+        # 10. Create epoch API
+        create_res = self.client.post(
+            "/api/epochs",
+            json={
+                "epoch_id": "new-epoch",
+                "csrf_token": self.app.state.csrf_token,
+            },
+        )
+        self.assertEqual(create_res.status_code, 200)
+        self.assertEqual(create_res.json()["job_id"], "job-create-new-epoch")
+
+        # 11. Missing CSRF / confirmation fails
+        bad_action = self.client.post(
+            "/api/epoch/epoch-one/action",
+            json={
+                "action": "preflight",
+                "csrf_token": "wrong-token",
+                "confirmed": "yes",
+            },
+        )
+        self.assertEqual(bad_action.status_code, 400)
 
     def test_post_requires_csrf_confirmation_and_same_origin(self):
         missing = self.client.post(
-            "/epochs/epoch-one/actions/run",
-            data={"csrf_token": self.app.state.csrf_token},
+            "/api/epoch/epoch-one/action",
+            json={"action": "run", "csrf_token": self.app.state.csrf_token},
         )
         self.assertEqual(missing.status_code, 400)
-        self.assertIn("confirm this operation", missing.text)
+        self.assertIn("confirm this operation", missing.json()["message"])
 
         bad_origin = self.client.get(
             "/", headers={"origin": "https://evil.example"}
@@ -316,10 +453,14 @@ class TestWebConsole(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["host"], "127.0.0.1")
         self.assertEqual(run.call_args.kwargs["port"], 9876)
 
-    def test_cli_exposes_web_command(self):
-        args = build_parser().parse_args(["web", "--port", "9999"])
-        self.assertEqual(args.port, 9999)
-        self.assertEqual(args.evidence_root, ".bba")
+    def test_cli_exposes_web_and_operator_commands(self):
+        args_web = build_parser().parse_args(["web", "--port", "9999"])
+        self.assertEqual(args_web.port, 9999)
+        self.assertEqual(args_web.evidence_root, ".bba")
+
+        args_op = build_parser().parse_args(["operator", "--port", "7777"])
+        self.assertEqual(args_op.port, 7777)
+        self.assertEqual(args_op.evidence_root, ".bba")
 
     def test_job_queue_serializes_mutations(self):
         queue = OperatorJobQueue()
